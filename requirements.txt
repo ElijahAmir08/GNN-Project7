@@ -1,0 +1,3 @@
+# Day 1 dependencies only. PyTorch/PyG will be added after data checks pass.
+pyrigi==1.3.0
+networkx>=3.3,<4
