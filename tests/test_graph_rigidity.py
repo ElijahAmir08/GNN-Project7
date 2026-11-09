@@ -19,19 +19,19 @@ class TestGraphRigidity(unittest.TestCase):
         ]
         self.assertTrue(is_graph_rigid(4, crossed_square))
 
-# Five-node rigid example
-def test_five_node_examples(self):
+    # Five-node rigid example
+    def test_five_node_examples(self):
 
-    rigid_five = [
-    (0,1), (0,2), (1,2), (0,3), (1,3), (0, 4), (2, 4)
-    ]
-    self.assertTrue(is_graph_rigid(5, rigid_five))
-# Five-node non-rigid example
-def test_five_node_non_rigid(self):
-    non_rigid_five = [
-        (0,1), (0,2), (0, 3), (1,2), (1,3), (2,3), (0,4)
-    ]
-    self.assertFalse(is_graph_rigid(5, non_rigid_five))
+        rigid_five = [
+        (0,1), (0,2), (1,2), (0,3), (1,3), (0, 4), (2, 4)
+        ]
+        self.assertTrue(is_graph_rigid(5, rigid_five))
+    # Five-node non-rigid example
+    def test_five_node_non_rigid(self):
+        non_rigid_five = [
+            (0,1), (0,2), (0, 3), (1,2), (1,3), (2,3), (0,4)
+        ]
+        self.assertFalse(is_graph_rigid(5, non_rigid_five))
 
 if __name__ == '__main__':
     unittest.main()
