@@ -1,3 +1,4 @@
+from pathlib import Path
 """Decode graph data from Laman graphs dataset."""
 
 
@@ -25,3 +26,26 @@ def decode_laman_integer(encoded: int, num_nodes: int) -> list[tuple[int, int]]:
 
     # Return the list of edges
     return edges
+
+
+def load_laman_graphs(
+        num_nodes: int,
+        dataset_dir: Path ) -> list[list[tuple[int, int]]]:
+        """Load laman graphs with num_nodes vertices
+           
+           Reads LamanGraphsN.txt and decodes each graph into the undirected edge list
+        """
+        # Create the path to the Laman graphs text file for the specified number of nodes
+        text_file = dataset_dir / f"LamanGraphs{num_nodes}.txt"
+        # Read the contents
+        with open(text_file, "r", encoding="utf-8") as file:
+             encoded_graphs = [
+                  int(line.strip()) for line in file if line.strip()
+             ]
+        graphs = []
+        # Decode each encoded graph into an edge list
+        for encoded in encoded_graphs:
+            edges = decode_laman_integer(encoded, num_nodes)
+            graphs.append(edges)
+        return graphs
+
