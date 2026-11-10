@@ -22,7 +22,7 @@ class LamanLoaderTests(unittest.TestCase):
 
             #Create a temporary LamanGraphs4.txt file
             test_file = dataset_dir / "LamanGraphs4.txt"
-            test_file.write_text("31\n\n", encoding="utf-8")
+            test_file.write_text("{31}\n", encoding="utf-8")
             graphs = load_laman_graphs(4, dataset_dir)
             self.assertEqual(len(graphs), 1)
 

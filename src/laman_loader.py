@@ -38,14 +38,20 @@ def load_laman_graphs(
         # Create the path to the Laman graphs text file for the specified number of nodes
         text_file = dataset_dir / f"LamanGraphs{num_nodes}.txt"
         # Read the contents
-        with open(text_file, "r", encoding="utf-8") as file:
-             encoded_graphs = [
-                  int(line.strip()) for line in file if line.strip()
-             ]
+        contents = text_file.read_text(encoding="utf-8").strip()
+        # Check file format
+        if not (contents.startswith("{") and contents.endswith("}")):
+            raise ValueError(f"Invalid format in {text_file}. Expected contents to be enclosed in braces.")
+        #Remove the outer braces
+        contents = contents[1:-1].strip()
+
+        if not contents:
+            return []
+        # Convert comma seperated ints into edge lists
         graphs = []
-        # Decode each encoded graph into an edge list
-        for encoded in encoded_graphs:
-            edges = decode_laman_integer(encoded, num_nodes)
-            graphs.append(edges)
+        for value in contents.split(","):
+             encoded = int(value.strip())
+             edges = decode_laman_integer(encoded, num_nodes)
+             graphs.append(edges)
         return graphs
 
