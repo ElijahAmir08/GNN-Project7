@@ -58,7 +58,11 @@ def fundamental_circuit(
         if not make_graph(num_nodes, trial).is_Rd_independent(dim=2):
             current = trial
 
-    if not make_graph(num_nodes, current).is_Rd_circuit(dim=2):
+    # Verify on the edge-induced subgraph: isolated vertices make PyRigi's
+    # is_Rd_circuit return False even when the edges form a valid circuit.
+    circuit_graph = Graph()
+    circuit_graph.add_edges(current)
+    if not circuit_graph.is_Rd_circuit(dim=2):
         raise AssertionError("Circuit verification failed")
     return sorted(current)
 
