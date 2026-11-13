@@ -1,0 +1,36 @@
+{
+  "seed": 42,
+  "split_unit": "rigid_nonrigid_pair",
+  "splits": {
+    "train": [
+      "7_10_rigid",
+      "7_10_nonrigid",
+      "6_6_rigid",
+      "6_6_nonrigid",
+      "6_3_rigid",
+      "6_3_nonrigid",
+      "7_11_rigid",
+      "7_11_nonrigid",
+      "7_12_rigid",
+      "7_12_nonrigid",
+      "6_7_rigid",
+      "6_7_nonrigid",
+      "7_9_rigid",
+      "7_9_nonrigid",
+      "6_4_rigid",
+      "6_4_nonrigid"
+    ],
+    "val": [
+      "6_5_rigid",
+      "6_5_nonrigid",
+      "5_1_rigid",
+      "5_1_nonrigid"
+    ],
+    "test": [
+      "6_2_rigid",
+      "6_2_nonrigid",
+      "7_8_rigid",
+      "7_8_nonrigid"
+    ]
+  }
+}
