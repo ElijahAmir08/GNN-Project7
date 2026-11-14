@@ -5,7 +5,7 @@ from itertools import combinations
 import networkx as nx
 
 from src.orbits import candidate_stabilizer_orbits
-from src.rigidity_labels import label_proposed_edge, make_graph
+from src.rigidity_labels import label_proposed_edge, make_graph, normalize_edge
 
 
 def candidate_features(num_nodes, edges, candidate) -> tuple[int, ...]:
@@ -28,22 +28,31 @@ def candidate_sort_key(record):
     return (-circuit_size, candidate_edge)
 
 
-def find_matched_pair(num_nodes, parent_edges, min_circuit_size=10):
+def find_matched_pair(num_nodes, parent_edges, min_circuit_size=10,
+                      candidate_edges=None, independent_candidates=None, min_distance=0):
     """Find one opposite-label pair with equal features on the same flexible base.
 
     Remove an edge outside a candidate's circuit. Restoring that edge is
-    independent; the original candidate remains redundant. Keep at least
-    one other off-circuit edge for circuit AUROC. Prefer larger circuits.
+    independent; the original candidate remains redundant. Optionally search
+    other independent candidates with the same features instead of restoring
+    the removed edge. Keep an off-circuit edge and prefer larger circuits.
     """
     if not make_graph(num_nodes, parent_edges).is_min_rigid(dim=2):
         raise ValueError("Parent must be a Laman graph")
     existing = set(parent_edges)
-    candidates = []
-    for candidate in combinations(range(num_nodes), 2):
+    if candidate_edges is None:
+        candidate_edges = list(combinations(range(num_nodes), 2))
+    candidate_edges = sorted({normalize_edge(edge) for edge in candidate_edges} - existing)
+    if independent_candidates is not None:
+        independent_candidates = sorted({normalize_edge(edge) for edge in independent_candidates} - existing)
+    search = set(candidate_edges) | set(independent_candidates or [])
+    parent_records = {}
+    for candidate in sorted(search):
         if candidate not in existing:
             rec = label_proposed_edge(num_nodes, parent_edges, candidate)
-            if len(rec["circuit_edges"]) >= min_circuit_size:
-                candidates.append(rec)
+            parent_records[candidate] = rec
+    candidates = [parent_records[edge] for edge in candidate_edges
+                  if len(parent_records[edge]["circuit_edges"]) >= min_circuit_size]
     candidates.sort(key=candidate_sort_key)
 
     for rec in candidates:
@@ -54,17 +63,28 @@ def find_matched_pair(num_nodes, parent_edges, min_circuit_size=10):
         candidate = tuple(rec["candidate_edge"])
         for removed in outside:
             base = sorted(existing - {removed})
-            if candidate_features(num_nodes, base, candidate) != candidate_features(num_nodes, base, removed):
+            features = candidate_features(num_nodes, base, candidate)
+            if features[-1] < min_distance:
                 continue
-            redundant = label_proposed_edge(num_nodes, base, candidate)
-            independent = label_proposed_edge(num_nodes, base, removed)
-            assert redundant["label"] == 1 and independent["label"] == 0
-            assert redundant["circuit_edges"] == rec["circuit_edges"]
-            return removed, independent, redundant
+            alternatives = [removed] if independent_candidates is None else independent_candidates
+            for alternative in alternatives:
+                if independent_candidates is not None:
+                    # Removing an edge breaks exactly the parent circuits containing it.
+                    other_circuit = set(map(tuple, parent_records[alternative]["circuit_edges"]))
+                    if removed not in other_circuit:
+                        continue
+                if features != candidate_features(num_nodes, base, alternative):
+                    continue
+                redundant = label_proposed_edge(num_nodes, base, candidate)
+                independent = label_proposed_edge(num_nodes, base, alternative)
+                assert redundant["label"] == 1 and independent["label"] == 0
+                assert redundant["circuit_edges"] == rec["circuit_edges"]
+                return removed, independent, redundant
     return None
 
 
 def dataset_record(base_id, labeled, parent_code, family):
+    """Keep Salaar's edge-record fields and add source provenance."""
     u, v = labeled["candidate_edge"]
     return {
         "graph_id": f"{base_id}_c{u}-{v}", "base_id": base_id,
