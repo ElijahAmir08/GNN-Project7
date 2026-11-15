@@ -2,7 +2,7 @@
 
 ## Construction
 
-Join two dataset Laman graphs along one chosen edge. Only those two vertices
+Join two dataset Laman graphs along one chosen edge. Only those two vertices (As suggested by Ambuj from our update meeting)
 are identified, and the shared edge is kept once. The result has
 `n = n_left + n_right - 2` vertices and `m = 2*n - 3` edges.
 Shared-edge gluing preserves Laman sparsity; the generator also verifies both
