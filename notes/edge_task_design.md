@@ -62,3 +62,21 @@ Note: adding any edge to a full Laman graph is always redundant, which is why we
   (better sufficiency) at +0.2–0.3 extra edges; circuit AUROC/precision change <= 0.03.
 - GNNExplainer relabeling Spearman (0.28–0.59) is always below its same-graph reseed
   Spearman (0.48–0.73): relabeling adds inconsistency on top of optimizer noise.
+
+## Stress tests on Elijah's sets (Nov 17; scripts/eval_checkpoints.py, no retraining)
+Checkpoints trained on edge_medium (n = 6–10). Labels of all 56 Elijah records re-verified with PyRigi.
+2/26 laman-matched bases are isomorphic to a medium train base (reported with and without).
+
+| test acc (3 seeds)      | medium test | matched pairs (n 8–9) | Henneberg n 14–16 | chains n 14–16 |
+|---|---|---|---|---|
+| features                | 0.773 | 0.500 | 0.764 | 0.500 |
+| gcn                     | 0.975 | 0.936 | 0.821 | 0.578 |
+| mpnn                    | 1.000 | 1.000 | 0.917 | 0.689 |
+| gin (run A / run B)     | 0.995 / 0.997 | 1.000 / 1.000 | 0.882 / 0.831 | 0.733 / 0.678 |
+| dsgin                   | 0.998 | 1.000 | 0.924 | 0.856 |
+
+- Matched pairs kill the shortcut (features 50%) but not the GNNs (100%): the GNNs never relied on it.
+- Size alone (Henneberg 14–16) costs 8–17 points; chains cost a further 7–25 points
+  (long circuits spanning both modules). GCN/MPNN fail mostly by calling redundant
+  chain candidates independent (redundant acc 0.22 / 0.38).
+- DS-GIN (> 1-WL) is best on both stress sets; with n = 30 the chain gap is suggestive, not conclusive.
