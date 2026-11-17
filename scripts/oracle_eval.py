@@ -22,6 +22,15 @@ Additional columns:
   cert_eff        (|C|-1) / shortest prefix of the ranking that is a valid
                   certificate (1.0 = finds a minimal certificate first;
                   truth-redundant examples only)
+
+Graded metrics (truth-redundant examples; partial credit for near misses):
+  recall@k        fraction of a known certificate inside the top-k edges
+                  (best over record["certificates"] when several exist)
+  valid@k+1/+2    a valid certificate exists within 1 / 2 edges of slack
+  slack_score     (|E| - j) / (|E| - k), j = shortest valid prefix:
+                  1 = minimal certificate first, 0 = needs every edge.
+                  Unlike cert_eff it does not reward random rankings when
+                  circuits cover most edges (random ~ 1 / (k + 1)).
   model_ok_on_S   model prediction on S equals the true label on S: is the
                   model itself reliable on the masked graphs that fidelity
                   metrics feed it?
@@ -137,6 +146,16 @@ def grade(model, ex, method, variant) -> dict:
     if truth == 1:
         j = shortest_valid_prefix(n, edges, cand, ranking(scores, orbits, variant, k))
         out["cert_eff"] = (k / j) if j else 0.0
+        out["slack"] = ((E - j) / (E - k) if E > k else 1.0) if j else 0.0
+        out["valid_k1"] = bool(j) and j <= k + 1
+        out["valid_k2"] = bool(j) and j <= k + 2
+        certs = r.get("certificates") or [r["circuit_edges"]]
+        top = {edges[i] for i in sel}
+        best = 0.0
+        for cert in certs:
+            cset = {tuple(e) for e in cert} - {cand}
+            best = max(best, len(top & cset) / len(cset))
+        out["recall"] = best
     return out
 
 
@@ -153,17 +172,49 @@ def fmt(vals, digits=1):
     return f"{st.mean(vals):.{digits}f} ± {st.pstdev(vals):.{digits}f}"
 
 
+def summarize(model, examples, method, variant) -> tuple[dict, dict]:
+    """Grade every example and aggregate one (method, variant) cell."""
+    rows = [grade(model, ex, method, variant) for ex in examples]
+    g = collections.defaultdict(list)
+    for row in rows:
+        g[row["group"]].append(row)
+    pred_red = g["TP"] + g["FP"]
+
+    def mean_of(key):
+        return float(np.mean([float(x[key]) for x in rows if key in x] or [np.nan]))
+
+    stats = {
+        "FV": pct([x["faithful"] and x["valid"] for x in pred_red]),
+        "F_notV": pct([x["faithful"] and not x["valid"] for x in pred_red]),
+        "V_notF": pct([x["valid"] and not x["faithful"] for x in pred_red]),
+        "neither": pct([not x["faithful"] and not x["valid"] for x in pred_red]),
+        "TP_FV": pct([x["faithful"] and x["valid"] for x in g["TP"]]),
+        "FP_faithful": pct([x["faithful"] for x in g["FP"]]),
+        "FN_faithful": pct([x["faithful"] for x in g["FN"]]),
+        "cert_eff": mean_of("cert_eff"),
+        "cert_eff_exact": float(np.mean([float(x["cert_eff"] >= 1.0) for x in rows if "cert_eff" in x] or [np.nan])),
+        "truth_nec": pct([x["truth_nec"] for x in rows if x["group"] in ("TP", "FN")]),
+        "model_nec": pct([x["model_nec"] for x in rows]),
+        "model_ok_on_S": pct([x["model_ok_on_S"] for x in rows]),
+        "model_ok_on_rest": pct([x["model_ok_on_rest"] for x in rows]),
+        "overshoot": float(np.mean([x["size"] - x["k"] for x in rows])),
+        **{key: mean_of(key) for key in ("recall", "slack", "valid_k1", "valid_k2")},
+    }
+    return stats, {k: len(v) for k, v in g.items()}
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--runs", nargs="+", default=RUNS)
-    p.add_argument("--datasets", nargs="+", default=["", "_chain_matched_eval"],
-                   help="score-file suffixes: '' = edge_medium test, '_chain_matched_eval' = chains")
+    p.add_argument("--datasets", nargs="+", default=["", "_chain_matched_eval", "_hard_eval"],
+                   help="score-file suffixes: '' = edge_medium test, '_chain_matched_eval' = chains, '_hard_eval' = hard set (reported per family)")
     p.add_argument("--out", type=Path, default=ROOT / "results/oracle_tables.md")
     args = p.parse_args()
 
     # results[(dataset, run, method, variant)] -> list over seeds of per-seed aggregates
     agg = collections.defaultdict(list)
     counts = collections.defaultdict(list)
+    ds_labels: list[str] = []  # dataset (and family, when records have one), in order seen
     for ds in args.datasets:
         for run in args.runs:
             for seed_dir in sorted((ROOT / "results" / run).glob("seed*")):
@@ -171,44 +222,30 @@ def main() -> None:
                 if not f.exists():
                     continue
                 model = load_model(seed_dir / "model.pt")
-                examples = json.loads(f.read_text())["examples"]
-                for method in METHODS:
-                    for variant in VARIANTS:
-                        rows = [grade(model, ex, method, variant) for ex in examples]
-                        g = collections.defaultdict(list)
-                        for row in rows:
-                            g[row["group"]].append(row)
-                        pred_red = g["TP"] + g["FP"]
-                        cells = {
-                            "FV": pct([x["faithful"] and x["valid"] for x in pred_red]),
-                            "F_notV": pct([x["faithful"] and not x["valid"] for x in pred_red]),
-                            "V_notF": pct([x["valid"] and not x["faithful"] for x in pred_red]),
-                            "neither": pct([not x["faithful"] and not x["valid"] for x in pred_red]),
-                        }
-                        stats = {
-                            **cells,
-                            "TP_FV": pct([x["faithful"] and x["valid"] for x in g["TP"]]),
-                            "FP_faithful": pct([x["faithful"] for x in g["FP"]]),
-                            "FN_faithful": pct([x["faithful"] for x in g["FN"]]),
-                            "cert_eff": float(np.mean([x["cert_eff"] for x in rows if "cert_eff" in x] or [np.nan])),
-                            "truth_nec": pct([x["truth_nec"] for x in rows if x["group"] in ("TP", "FN")]),
-                            "model_nec": pct([x["model_nec"] for x in rows]),
-                            "model_ok_on_S": pct([x["model_ok_on_S"] for x in rows]),
-                            "model_ok_on_rest": pct([x["model_ok_on_rest"] for x in rows]),
-                            "overshoot": float(np.mean([x["size"] - x["k"] for x in rows])),
-                        }
-                        agg[(ds, run, method, variant)].append(stats)
-                        if method == "oracle" and variant == "raw":
-                            counts[(ds, run)].append({k: len(v) for k, v in g.items()})
+                by_family = collections.defaultdict(list)
+                for ex in json.loads(f.read_text())["examples"]:
+                    by_family[ex["record"].get("family")].append(ex)
+                for fam in sorted(by_family, key=str):
+                    dsl = ds if fam is None else f"{ds}:{fam}"
+                    if dsl not in ds_labels:
+                        ds_labels.append(dsl)
+                    for method in METHODS:
+                        for variant in VARIANTS:
+                            stats, group_counts = summarize(model, by_family[fam], method, variant)
+                            agg[(dsl, run, method, variant)].append(stats)
+                            if method == "oracle" and variant == "raw":
+                                counts[(dsl, run)].append(group_counts)
 
-    name = {"": "edge_medium test (n 6–10)", "_chain_matched_eval": "Elijah chains (n 14–16)"}
+    name = {"": "edge_medium test (n 6–10)", "_chain_matched_eval": "Elijah chains (n 14–16)",
+            "_hard_eval:decoy": "Hard set: decoy family", "_hard_eval:multi": "Hard set: multi-certificate family",
+            "_hard_eval:symmetric": "Hard set: symmetric family"}
     out = ["# Oracle-graded explanations: faithful to the model vs. correct by the math\n",
            "Generated by `scripts/oracle_eval.py`; mean ± std over checkpoint seeds. "
            "F = faithful (model keeps its prediction on S alone, hard mask); V = valid (exact rigidity oracle "
            "agrees with the prediction on S alone; for 'redundant' predictions S is a certificate). "
            "2×2 cells are over examples the model predicts redundant (TP + FP). Budget k = |C| − 1 if truly "
            "redundant, else ⌊|E|/2⌉.\n"]
-    for ds in args.datasets:
+    for ds in ds_labels:
         out.append(f"\n## {name.get(ds, ds)}\n")
         out.append("Prediction outcome counts per seed (TP / FP / FN / TN):\n")
         for run in args.runs:
@@ -227,8 +264,20 @@ def main() -> None:
                 out.append(f"| {run} | {method} | **{col('FV')}** | {col('F_notV')} | {col('V_notF')} | {col('neither')} "
                            f"| {col('TP_FV')} | {col('FP_faithful')} | {col('FN_faithful')} | {col('cert_eff', 2)} "
                            f"| {col('truth_nec')} | {col('model_nec')} | {col('model_ok_on_S')} | {col('model_ok_on_rest')} |")
+        out.append("\n### Graded explanation quality (truly redundant examples; raw explanations)\n")
+        out.append("| model | explainer | circuit recall@k | valid@k % | valid@k+1 % | valid@k+2 % | slack score |")
+        out.append("|---|---|---|---|---|---|---|")
+        for run in args.runs:
+            for method in METHODS:
+                s = agg.get((ds, run, method, "raw"))
+                if not s:
+                    continue
+                out.append(f"| {run} | {method} | {fmt([x['recall'] for x in s], 2)} "
+                           f"| {fmt([100 * x['cert_eff_exact'] for x in s])} "
+                           f"| {fmt([100 * x['valid_k1'] for x in s])} | {fmt([100 * x['valid_k2'] for x in s])} "
+                           f"| {fmt([x['slack'] for x in s], 2)} |")
         out.append("\n### Symmetry corrections (F∧V % and certificate efficiency)\n")
-        out.append("| model | explainer | F∧V raw | F∧V orbit_avg | F∧V orbit_sel | cert. eff. raw | cert. eff. orbit_avg | cert. eff. orbit_sel | orbit_sel overshoot |")
+        out.append("| model | explainer | F∧V raw | F∧V orbit_avg | F∧V orbit_sel | slack raw | slack orbit_avg | slack orbit_sel | orbit_sel overshoot |")
         out.append("|---|---|---|---|---|---|---|---|---|")
         for run in args.runs:
             for method in ("PGExplainer", "GNNExplainer"):
@@ -236,7 +285,7 @@ def main() -> None:
                 if not all(ss.values()):
                     continue
                 out.append(f"| {run} | {method} | " + " | ".join(fmt([x["FV"] for x in ss[v]]) for v in VARIANTS)
-                           + " | " + " | ".join(fmt([x["cert_eff"] for x in ss[v]], 2) for v in VARIANTS)
+                           + " | " + " | ".join(fmt([x["slack"] for x in ss[v]], 2) for v in VARIANTS)
                            + f" | {fmt([x['overshoot'] for x in ss['orbit_sel']], 2)} |")
     text = "\n".join(out) + "\n"
     args.out.write_text(text, encoding="utf-8")

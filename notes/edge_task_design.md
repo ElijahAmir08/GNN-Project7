@@ -95,3 +95,20 @@ rigidity certificate for the prediction; budget k = |C| - 1 (strict: minimal cer
   efficiency ≈ random (0.78–0.85) because circuits cover ~80% of edges: chain sets cannot rank
   explainers until circuit share is reduced (decoy structure) and graded metrics are added.
 - Whole-orbit selection never lowers F∧V and raises it slightly (e.g. DS-GIN GNNExplainer 10.7 -> 14.7%).
+
+## Hard set: explainers + oracle (Nov 17; data_new/generated/hard_eval.json, results/oracle_tables.md)
+Families from src/hard_generator.py (360 examples, PyRigi-verified, minimal certificates).
+- Decoy (circuits ~30% of edges): explainers clearly beat random (slack 0.37–0.58 vs 0.13;
+  recall 0.36–0.65 vs 0.30). MPNN shows the first large "faithful but INVALID" mass:
+  28–38% of its explanations (and 31% of random subsets) keep its 'redundant' prediction
+  without containing a certificate; MPNN is right on only ~80% of masked graphs.
+  High accuracy on full graphs does not mean the decision depends on a complete certificate.
+- Multi / symmetric: GIN, DS-GIN, GCN predict 'redundant' on 55–88% of independent examples
+  (FP); MPNN mostly correct. Strict validity of real explainers ~0–4%; slack barely above random.
+- Exact necessity breaks with non-unique ground truth: removing the oracle's minimal certificate
+  changes the true label in only 62% (multi) and 0% (symmetric) of cases — the symmetric copy
+  still proves redundancy. Deletion-based fidelity is ill-posed when certificates are not unique.
+- Symmetry vs. minimality, first evidence: on the symmetric family whole-orbit selection
+  overshoots by ~1 edge, never yields a minimal valid certificate (F∧V 0%), and LOWERS slack
+  (e.g. PGExplainer on MPNN 0.29 -> 0.19, GIN 0.39 -> 0.26). On every other dataset the
+  corrections were neutral or helpful.
