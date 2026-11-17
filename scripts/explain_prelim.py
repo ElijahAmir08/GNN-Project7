@@ -37,21 +37,44 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from src.data import NUM_NODE_FEATURES, directed_to_undirected, record_to_data  # noqa: E402
-from src.models import EdgeGIN  # noqa: E402
+from src.models import build_model  # noqa: E402
 from src.orbits import (candidate_stabilizer_orbits, orbit_average, orbit_select,  # noqa: E402
                         splits_an_orbit, topk)
 
 from torch_geometric.explain import Explainer, GNNExplainer, PGExplainer  # noqa: E402
 
 MODEL_CONFIG = dict(mode="multiclass_classification", task_level="graph", return_type="raw")
-MODEL: EdgeGIN | None = None
+MODEL = None
 GNNEXP_EPOCHS = 200
 
 
-def load_model(run_dir: Path, seed: int) -> EdgeGIN:
+class TemperatureScaled(torch.nn.Module):
+    """Divide logits by T so every checkpoint has the same median validation
+    margin; makes explainer losses and fidelity probabilities comparable
+    across models. (It does not fix saturation on soft-masked inputs.)"""
+
+    def __init__(self, model, temperature: float):
+        super().__init__()
+        self.model, self.temperature = model, temperature
+
+    def forward(self, *args, **kwargs):
+        return self.model(*args, **kwargs) / self.temperature
+
+
+@torch.no_grad()
+def fit_temperature(model, val_records, target_margin: float) -> float:
+    margins = []
+    for r in val_records:
+        d = record_to_data(r)
+        out = model(d.x, d.edge_index, None, d.candidate)[0]
+        margins.append((out.max() - out.min()).item())
+    return max(float(np.median(margins)) / target_margin, 1e-6)
+
+
+def load_model(run_dir: Path, seed: int):
     ckpt = torch.load(run_dir / f"seed{seed}" / "model.pt", weights_only=False)
     cfg = ckpt["config"]
-    model = EdgeGIN(NUM_NODE_FEATURES, cfg["hidden"], cfg["layers"], cfg["dropout"])
+    model = build_model(cfg["model"], NUM_NODE_FEATURES, cfg["hidden"], cfg["layers"], cfg["dropout"])
     model.load_state_dict(ckpt["state_dict"])
     return model.eval()
 
@@ -134,12 +157,19 @@ def main() -> None:
     p.add_argument("--consistency-n", type=int, default=60)
     p.add_argument("--workers", type=int, default=32)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--target-margin", type=float, default=4.0,
+                   help="median validation logit margin after temperature scaling (<=0 disables)")
     args = p.parse_args()
 
     rng = random.Random(args.seed)
     torch.set_num_threads(8)
-    MODEL = load_model(args.run, args.seed_ckpt)
+    base_model = load_model(args.run, args.seed_ckpt)
     records = json.loads(args.data.read_text())["records"]
+    temperature = 1.0
+    if args.target_margin > 0:
+        temperature = fit_temperature(base_model, [r for r in records if r["split"] == "val"], args.target_margin)
+    MODEL = TemperatureScaled(base_model, temperature).eval()
+    print(f"logit temperature: {temperature:.3f}")
     test = [r for r in records if r["split"] == "test"]
     sample = []
     for label in (0, 1):
@@ -230,7 +260,7 @@ def main() -> None:
         vals = [v for v in vals if v is not None]
         return float(np.mean(vals)) if vals else float("nan")
 
-    summary = {"n_examples": len(sample),
+    summary = {"n_examples": len(sample), "temperature": temperature,
                "frac_with_nontrivial_orbits": float(np.mean(nontrivial)),
                "circuit_is_union_of_orbits": float(np.mean(circuit_is_union)),
                "gnnexplainer_consistency": cons, "table": {}}
@@ -260,7 +290,7 @@ def main() -> None:
 
     out = args.run / f"seed{args.seed_ckpt}" / "explain_prelim.json"
     out.write_text(json.dumps(summary, indent=2))
-    print(f"\nsaved {out.relative_to(ROOT)}")
+    print(f"\nsaved {out}")
 
 
 if __name__ == "__main__":

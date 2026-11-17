@@ -3,6 +3,7 @@
 Usage:
     python scripts/train.py --data data/generated/edge_small.json --model gin --seeds 0 1 2
     python scripts/train.py --data data/generated/edge_small.json --model features   # shortcut check
+    models (expressivity ladder): features < gcn < mpnn ~ gin (1-WL) < dsgin (>1-WL)
 
 Writes results/<run-name>/{config.json, seed<k>/model.pt, seed<k>/metrics.json, summary.json}.
 The best-validation-accuracy checkpoint per seed is the one evaluated on test
@@ -27,7 +28,7 @@ from torch_geometric.loader import DataLoader
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from src.data import NUM_NODE_FEATURES, load_split_datasets  # noqa: E402
-from src.models import EdgeGIN, FeatureMLP, shortcut_features  # noqa: E402
+from src.models import ALL_MODELS, build_model as _build, shortcut_features  # noqa: E402
 
 
 def set_seed(seed: int) -> None:
@@ -37,15 +38,13 @@ def set_seed(seed: int) -> None:
 
 
 def build_model(args):
-    if args.model == "gin":
-        return EdgeGIN(NUM_NODE_FEATURES, args.hidden, args.layers, args.dropout)
-    return FeatureMLP(args.hidden, args.dropout)
+    return _build(args.model, NUM_NODE_FEATURES, args.hidden, args.layers, args.dropout)
 
 
 def logits_for(model, batch, kind):
-    if kind == "gin":
-        return model(batch.x, batch.edge_index, batch.batch, batch.candidate)
-    return model(batch.feats)
+    if kind == "features":
+        return model(batch.feats)
+    return model(batch.x, batch.edge_index, batch.batch, batch.candidate)
 
 
 @torch.no_grad()
@@ -119,7 +118,7 @@ def vars_jsonable(args):
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--data", type=Path, default=ROOT / "data/generated/edge_small.json")
-    p.add_argument("--model", choices=["gin", "features"], default="gin")
+    p.add_argument("--model", choices=ALL_MODELS, default="gin")
     p.add_argument("--seeds", type=int, nargs="+", default=[0])
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--hidden", type=int, default=64)

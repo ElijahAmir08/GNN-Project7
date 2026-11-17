@@ -50,3 +50,15 @@ Note: adding any edge to a full Laman graph is always redundant, which is why we
   PGExplainer raw 29% -> orbit_avg 29% (scores already tied; splits come from
   arbitrary tie-breaking, which averaging cannot fix) -> orbit_sel 0%.
 - GNNExplainer is noisy: Spearman vs. itself with a new seed 0.59; vs. relabeled 0.40.
+
+## Model ladder + full explainer sweep (Nov 11; results/tables.md via scripts/make_tables.py)
+- Classification test acc (3 seeds): features 0.773, gcn 0.975, mpnn 1.000, gin 0.997, dsgin 0.998.
+  1-WL ceiling on our data is 100%, so dsgin has nothing extra to resolve here.
+- Explanation quality is dominated by checkpoint variance: PGExplainer circuit AUROC on
+  six same-config GIN checkpoints ranges 0.11–0.93 at identical test accuracy.
+- Soft-mask OOD: with all edges at mask 0.5 (explainer init), ~50% of predictions flip
+  for every model; GCN margin jumps 9.5 -> ~249 and its explainer gradient vanishes.
+- Orbit corrections: whole-orbit selection always gives 0% orbit splits and lowers fid-
+  (better sufficiency) at +0.2–0.3 extra edges; circuit AUROC/precision change <= 0.03.
+- GNNExplainer relabeling Spearman (0.28–0.59) is always below its same-graph reseed
+  Spearman (0.48–0.73): relabeling adds inconsistency on top of optimizer noise.

@@ -1,5 +1,6 @@
 import random
 
+import pytest
 import torch
 from pyrigi import Graph
 from torch_geometric.loader import DataLoader
@@ -7,7 +8,7 @@ from torch_geometric.loader import DataLoader
 from src.data import NUM_NODE_FEATURES, directed_to_undirected, record_to_data
 from src.edge_dataset import _base_task, assign_splits
 from src.laman import random_laman_graph
-from src.models import EdgeGIN
+from src.models import GRAPH_MODELS
 from src.rigidity_labels import label_proposed_edge
 
 
@@ -75,9 +76,10 @@ def test_candidate_offsets_when_batched():
     assert batch.candidate.tolist() == [[0, 2], [4, 5]]
 
 
-def test_gin_invariant_to_relabeling_and_endpoint_swap():
+@pytest.mark.parametrize("name", list(GRAPH_MODELS))
+def test_models_invariant_to_relabeling_and_endpoint_swap(name):
     torch.manual_seed(0)
-    model = EdgeGIN(NUM_NODE_FEATURES, hidden=16, num_layers=3).eval()
+    model = GRAPH_MODELS[name](NUM_NODE_FEATURES, hidden=16, num_layers=3).eval()
     edges = [(0, 1), (0, 2), (1, 2), (1, 3), (2, 4), (3, 4)]
     cand = (0, 3)
     d = record_to_data(_record([list(e) for e in edges], list(cand)))
@@ -90,3 +92,29 @@ def test_gin_invariant_to_relabeling_and_endpoint_swap():
     pd.candidate = torch.tensor([p_cand])
     out_p = model(pd.x, pd.edge_index, None, pd.candidate)
     assert torch.allclose(out, out_p, atol=1e-5)
+
+
+@pytest.mark.parametrize("name", list(GRAPH_MODELS))
+def test_models_batch_matches_single(name):
+    torch.manual_seed(0)
+    model = GRAPH_MODELS[name](NUM_NODE_FEATURES, hidden=16, num_layers=2).eval()
+    d1 = record_to_data(_record([[0, 1], [0, 2], [1, 2], [2, 3]], [0, 3], n=4))
+    d2 = record_to_data(_record([[0, 1], [0, 4], [1, 2], [2, 3], [3, 4]], [1, 3], n=5))
+    batch = next(iter(DataLoader([d1, d2], batch_size=2)))
+    out_b = model(batch.x, batch.edge_index, batch.batch, batch.candidate)
+    out_1 = torch.cat([model(d.x, d.edge_index, None, d.candidate) for d in (d1, d2)])
+    assert torch.allclose(out_b, out_1, atol=1e-5)
+
+
+@pytest.mark.parametrize("name", list(GRAPH_MODELS))
+def test_explainer_masks_reach_model(name):
+    from torch_geometric.explain import Explainer, GNNExplainer
+    torch.manual_seed(0)
+    model = GRAPH_MODELS[name](NUM_NODE_FEATURES, hidden=16, num_layers=2).eval()
+    d = record_to_data(_record([[0, 1], [0, 2], [1, 2], [1, 3], [2, 4], [3, 4]], [0, 3]))
+    exp = Explainer(model, GNNExplainer(epochs=5), explanation_type="model", edge_mask_type="object",
+                    node_mask_type=None, model_config=dict(mode="multiclass_classification",
+                                                           task_level="graph", return_type="raw"))
+    e = exp(d.x, d.edge_index, batch=None, candidate=d.candidate)
+    assert e.edge_mask.shape == (d.edge_index.size(1),)
+    assert e.edge_mask.abs().sum() > 0
