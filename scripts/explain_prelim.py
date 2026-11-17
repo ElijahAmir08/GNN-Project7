@@ -148,7 +148,11 @@ def main() -> None:
     global MODEL
     p = argparse.ArgumentParser()
     p.add_argument("--run", type=Path, default=ROOT / "results/gin_edge_medium")
-    p.add_argument("--data", type=Path, default=ROOT / "data/generated/edge_medium.json")
+    p.add_argument("--data", type=Path, default=ROOT / "data/generated/edge_medium.json",
+                   help="examples to explain are drawn from its test split")
+    p.add_argument("--fit-data", type=Path, default=None,
+                   help="train/val source for temperature + PGExplainer training (default: --data); "
+                        "needed for evaluation-only files that have no train/val split")
     p.add_argument("--seed-ckpt", type=int, default=0)
     p.add_argument("--n-per-class", type=int, default=100)
     p.add_argument("--k-indep", type=int, default=4)
@@ -165,9 +169,11 @@ def main() -> None:
     torch.set_num_threads(8)
     base_model = load_model(args.run, args.seed_ckpt)
     records = json.loads(args.data.read_text())["records"]
+    fit_records = json.loads(args.fit_data.read_text())["records"] if args.fit_data else records
+    suffix = "" if args.data.stem == "edge_medium" else f"_{args.data.stem}"
     temperature = 1.0
     if args.target_margin > 0:
-        temperature = fit_temperature(base_model, [r for r in records if r["split"] == "val"], args.target_margin)
+        temperature = fit_temperature(base_model, [r for r in fit_records if r["split"] == "val"], args.target_margin)
     MODEL = TemperatureScaled(base_model, temperature).eval()
     print(f"logit temperature: {temperature:.3f}")
     test = [r for r in records if r["split"] == "test"]
@@ -185,7 +191,7 @@ def main() -> None:
     print(f"GNNExplainer: {time.time() - t:.1f}s")
 
     t = time.time()
-    train = [r for r in records if r["split"] == "train"]
+    train = [r for r in fit_records if r["split"] == "train"]
     pg = train_pgexplainer(MODEL, rng.sample(train, min(args.pg_train, len(train))), args.pg_epochs, args.seed)
     pg_scores = []
     for d in datas:
@@ -209,6 +215,15 @@ def main() -> None:
         if r["label"] == 1:
             cm = d.circuit_mask.numpy()
             circuit_is_union.append(all(cm[o].all() or (~cm[o]).all() for o in orbs))
+
+    # ---- per-example dump (consumed by scripts/oracle_eval.py) ----
+    with torch.no_grad():
+        preds = [MODEL(d.x, d.edge_index, None, d.candidate).argmax(-1).item() for d in datas]
+    dump = {"temperature": temperature, "examples": [
+        {"record": r, "pred": pr, "orbits": orbs,
+         "scores": {m: np.asarray(v[j], dtype=float).tolist() for m, v in methods.items()}}
+        for j, (r, pr, orbs) in enumerate(zip(sample, preds, orbits))]}
+    (args.run / f"seed{args.seed_ckpt}" / f"explain_scores{suffix}.json").write_text(json.dumps(dump))
 
     # ---- metrics ----
     rows = []
@@ -262,10 +277,11 @@ def main() -> None:
 
     summary = {"n_examples": len(sample), "temperature": temperature,
                "frac_with_nontrivial_orbits": float(np.mean(nontrivial)),
-               "circuit_is_union_of_orbits": float(np.mean(circuit_is_union)),
+               "circuit_is_union_of_orbits": float(np.mean(circuit_is_union)) if circuit_is_union else None,
                "gnnexplainer_consistency": cons, "table": {}}
     print(f"\nexamples with a nontrivial candidate-stabilizer orbit: {np.mean(nontrivial):.1%}")
-    print(f"redundant examples whose circuit is a union of orbits: {np.mean(circuit_is_union):.1%}")
+    if circuit_is_union:
+        print(f"redundant examples whose circuit is a union of orbits: {np.mean(circuit_is_union):.1%}")
     print("GNNExplainer consistency:", {k: round(v, 3) for k, v in cons.items()})
 
     header = f"{'method':13s} {'variant':10s} {'subset':9s} {'circ_prec':>9s} {'circ_auc':>8s} {'fid+':>6s} {'fid-':>6s} {'split%':>6s} {'over':>5s}"
@@ -288,7 +304,7 @@ def main() -> None:
                 print(f"{mname:13s} {vname:10s} {subset_name:9s} {line['circuit_prec']:9.3f} {line['circuit_auroc']:8.3f} "
                       f"{line['fid_plus']:6.3f} {line['fid_minus']:6.3f} {100 * line['orbit_split']:6.1f} {line['overshoot']:5.2f}")
 
-    out = args.run / f"seed{args.seed_ckpt}" / "explain_prelim.json"
+    out = args.run / f"seed{args.seed_ckpt}" / f"explain_prelim{suffix}.json"
     out.write_text(json.dumps(summary, indent=2))
     print(f"\nsaved {out}")
 

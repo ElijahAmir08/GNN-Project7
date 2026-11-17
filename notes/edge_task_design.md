@@ -80,3 +80,18 @@ Checkpoints trained on edge_medium (n = 6–10). Labels of all 56 Elijah records
   (long circuits spanning both modules). GCN/MPNN fail mostly by calling redundant
   chain candidates independent (redundant acc 0.22 / 0.38).
 - DS-GIN (> 1-WL) is best on both stress sets; with n = 30 the chain gap is suggestive, not conclusive.
+
+## Oracle-graded explanations (Nov 17; src/oracle.py, scripts/oracle_eval.py, results/oracle_tables.md)
+Exact oracle = generic 2D rigidity rank at random realizations; matches PyRigi on 5,290 labels
+and 330 random (incl. 74 dependent) edge sets. F = hard-mask sufficiency, V = S alone is a
+rigidity certificate for the prediction; budget k = |C| - 1 (strict: minimal certificate).
+- Medium test: strict F∧V oracle 94–100%; best explainer PGExplainer on gin run A 44 ± 23%;
+  other explainer/model pairs 0.4–20%; random 0%. Almost no "faithful but invalid" cases, and
+  the model is correct on 96–100% of masked graphs: in-distribution, faithfulness and truth
+  coincide, so explainer failures are search failures, not a model that reasons differently.
+- Chains: divergence appears. The true certificate is valid but NOT faithful in 15–25% of
+  cases for GCN/GIN (model rejects the real circuit; GCN is right on only 66% of oracle-masked
+  graphs). MPNN 96% and DS-GIN 83% oracle F∧V. Real explainers ~0% on chains, and certificate
+  efficiency ≈ random (0.78–0.85) because circuits cover ~80% of edges: chain sets cannot rank
+  explainers until circuit share is reduced (decoy structure) and graded metrics are added.
+- Whole-orbit selection never lowers F∧V and raises it slightly (e.g. DS-GIN GNNExplainer 10.7 -> 14.7%).
