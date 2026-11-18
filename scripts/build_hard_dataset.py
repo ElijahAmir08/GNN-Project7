@@ -3,9 +3,10 @@
 Usage:
     python scripts/build_hard_dataset.py --per-class 60 --out data_new/generated/hard_eval.json
 
-All records get split="test" (evaluation-only). Labels are balanced within
-each family; duplicate examples (isomorphic graph with the candidate marked)
-are dropped.
+All records get split="test" (evaluation-only). Every family is built
+as feature-matched (independent, redundant) pairs on the same graph, so labels
+are balanced and the seven shortcut features carry no signal; duplicate
+examples (isomorphic graph with the candidate marked) are dropped.
 """
 
 from __future__ import annotations
@@ -30,19 +31,24 @@ import networkx as nx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from src.hard_generator import make_example  # noqa: E402
+from src.hard_generator import MAKERS  # noqa: E402
 from src.orbits import candidate_stabilizer_orbits  # noqa: E402
 
-FAMILIES = ["decoy", "multi", "symmetric"]
+FAMILIES = list(MAKERS)
 
 
-def _task(args):
-    family, idx, seed, want = args
-    rec = make_example(family, random.Random(seed), f"{family}_{idx}", want)
-    edges = [tuple(e) for e in rec["edges"]]
-    orbits = candidate_stabilizer_orbits(rec["num_nodes"], edges, tuple(rec["candidate_edge"]))
-    rec["has_nontrivial_orbit"] = any(len(o) > 1 for o in orbits)
-    return rec
+def _task(args) -> list[dict]:
+    """One task -> a feature-matched (independent, redundant) pair, kept or
+    dropped together. Every family is built as matched pairs, so no
+    classifier on the seven shortcut features can beat 50%."""
+    family, idx, seed, _ = args
+    rng = random.Random(seed)
+    group = MAKERS[family](rng, f"{family}_{idx}") or []
+    for rec in group:
+        edges = [tuple(e) for e in rec["edges"]]
+        orbits = candidate_stabilizer_orbits(rec["num_nodes"], edges, tuple(rec["candidate_edge"]))
+        rec["has_nontrivial_orbit"] = any(len(o) > 1 for o in orbits)
+    return group
 
 
 def signature(rec) -> str:
@@ -64,22 +70,26 @@ def main() -> None:
 
     tasks, i = [], 0
     for family in FAMILIES:
-        for want in (0, 1):
-            for _ in range(3 * args.per_class):  # oversample; oracle may disagree with the steer
+        for want in (0, 1):  # each task yields one 0/1 pair; `want` only spreads seeds
+            for _ in range(3 * args.per_class):  # oversample: some tasks find no matched pair
                 tasks.append((family, i, args.seed * 1_000_003 + i, want))
                 i += 1
     with Pool(args.workers) as pool:
-        recs = pool.map(_task, tasks, chunksize=2)
+        groups = pool.map(_task, tasks, chunksize=2)
 
     seen, kept = set(), collections.defaultdict(list)
-    for rec in recs:
-        key = (rec["family"], rec["label"])
-        sig = signature(rec)
-        if sig in seen or len(kept[key]) >= args.per_class:
+    for group in groups:
+        if not group:
             continue
-        seen.add(sig)
-        rec["split"] = "test"
-        kept[key].append(rec)
+        sigs = [signature(r) for r in group]
+        keys = [(r["family"], r["label"]) for r in group]
+        if any(sg in seen for sg in sigs) or len(set(sigs)) < len(sigs) \
+                or any(len(kept[k]) >= args.per_class for k in keys):
+            continue
+        for rec, sg, k in zip(group, sigs, keys):
+            seen.add(sg)
+            rec["split"] = "test"
+            kept[k].append(rec)
 
     records = [r for fam in FAMILIES for lab in (0, 1) for r in kept[(fam, lab)]]
     meta = {"purpose": "evaluation_only", "families": FAMILIES,

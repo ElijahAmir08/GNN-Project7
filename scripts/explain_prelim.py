@@ -42,6 +42,7 @@ from src.orbits import (candidate_stabilizer_orbits, orbit_average, orbit_select
                         splits_an_orbit, topk)
 
 from torch_geometric.explain import Explainer, GNNExplainer, PGExplainer  # noqa: E402
+from torch_geometric.explain.algorithm.utils import clear_masks, set_masks  # noqa: E402
 
 MODEL_CONFIG = dict(mode="multiclass_classification", task_level="graph", return_type="raw")
 MODEL = None
@@ -106,13 +107,28 @@ def gnnexplainer_scores(model, d, seed: int) -> np.ndarray:
     return directed_to_undirected(exp.edge_mask.detach()).numpy()
 
 
+def edgegrad_scores(model, d) -> np.ndarray:
+    """Gradient of the predicted class's log-probability w.r.t. a per-edge
+    message weight, evaluated on the UNMASKED graph (all weights 1). Unlike
+    soft-mask explainers (which start every edge at sigmoid(0) = 0.5), the
+    model only ever sees its normal input. Positive = the edge supports the
+    prediction."""
+    mask = torch.ones(d.edge_index.size(1), requires_grad=True)
+    set_masks(model, mask, d.edge_index, apply_sigmoid=False)
+    try:
+        logp = torch.log_softmax(model(d.x, d.edge_index, None, d.candidate), -1)[0]
+        logp[logp.argmax()].backward()
+    finally:
+        clear_masks(model)
+    return directed_to_undirected(mask.grad.detach()).numpy()
+
+
 def _gnnexp_worker(args):
     rec, seed, perm = args
     torch.set_num_threads(1)
     if perm is None:
         return gnnexplainer_scores(MODEL, record_to_data(rec), seed)
     # Relabel nodes, explain, map scores back to original edge order.
-    n = rec["num_nodes"]
     p_edges = sorted(tuple(sorted((perm[u], perm[v]))) for u, v in rec["edges"])
     prec = dict(rec, edges=[list(e) for e in p_edges],
                 candidate_edge=sorted(perm[c] for c in rec["candidate_edge"]), circuit_edges=None)
@@ -121,16 +137,24 @@ def _gnnexp_worker(args):
     return np.array([s_perm[idx[tuple(sorted((perm[u], perm[v])))]] for u, v in rec["edges"]])
 
 
+@torch.no_grad()
+def model_target(model, d) -> torch.Tensor:
+    """Explain the model's own prediction (not the true label): explanations
+    must account for what the model does, including its mistakes."""
+    return model(d.x, d.edge_index, None, d.candidate).argmax(-1)
+
+
 def train_pgexplainer(model, train_recs, epochs: int, seed: int) -> Explainer:
     torch.manual_seed(seed)
     alg = PGExplainer(epochs=epochs, lr=0.003)
     explainer = Explainer(model, alg, explanation_type="phenomenon", edge_mask_type="object",
                           model_config=MODEL_CONFIG)
     data = [record_to_data(r) for r in train_recs]
+    targets = [model_target(model, d) for d in data]
     for epoch in range(epochs):
         losses = []
-        for d in data:
-            losses.append(alg.train(epoch, model, d.x, d.edge_index, target=d.y,
+        for d, t in zip(data, targets):
+            losses.append(alg.train(epoch, model, d.x, d.edge_index, target=t,
                                     batch=None, candidate=d.candidate))
         if epoch % 10 == 0 or epoch == epochs - 1:
             print(f"  PGExplainer epoch {epoch:3d} loss {statistics.mean(losses):.4f}")
@@ -195,7 +219,7 @@ def main() -> None:
     pg = train_pgexplainer(MODEL, rng.sample(train, min(args.pg_train, len(train))), args.pg_epochs, args.seed)
     pg_scores = []
     for d in datas:
-        exp = pg(d.x, d.edge_index, target=d.y, batch=None, candidate=d.candidate)
+        exp = pg(d.x, d.edge_index, target=model_target(MODEL, d), batch=None, candidate=d.candidate)
         pg_scores.append(directed_to_undirected(exp.edge_mask.detach()).numpy())
     print(f"PGExplainer (train + explain): {time.time() - t:.1f}s")
 
@@ -204,7 +228,8 @@ def main() -> None:
     # Oracle: circuit edges score 1 (redundant only; random for independent).
     oracle = [d.circuit_mask.numpy().astype(float) + 0.01 * nprng.random(len(r["edges"])) if r["label"] == 1
               else nprng.random(len(r["edges"])) for r, d in zip(sample, datas)]
-    methods = {"GNNExplainer": gnn, "PGExplainer": pg_scores, "random": rand, "oracle": oracle}
+    edgegrad = [edgegrad_scores(MODEL, d) for d in datas]
+    methods = {"GNNExplainer": gnn, "PGExplainer": pg_scores, "EdgeGrad": edgegrad, "random": rand, "oracle": oracle}
 
     # ---- orbits ----
     orbits = [candidate_stabilizer_orbits(r["num_nodes"], [tuple(e) for e in r["edges"]], tuple(r["candidate_edge"]))

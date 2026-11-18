@@ -9,6 +9,7 @@ For each run directory and each seed checkpoint, report on every --data file:
                  on the same base, so this is the strict shortcut-proof score)
   acc_no_leak    accuracy excluding examples whose base graph is isomorphic
                  to a base graph in the training split of --train-data
+Files whose records carry several "family" values are reported per family.
 
 Usage:
   python scripts/eval_checkpoints.py \
@@ -110,7 +111,13 @@ def main() -> None:
     datasets = {}
     for path in args.data:
         recs = [r for r in json.loads(path.read_text())["records"] if r.get("split", "test") == "test"]
-        datasets[path.stem] = (recs, leaked_ids(recs, train_records))
+        leaks = leaked_ids(recs, train_records)
+        families = sorted({r["family"] for r in recs if "family" in r})
+        if len(families) > 1:  # report multi-family files per family
+            for fam in families:
+                datasets[f"{path.stem}:{fam}"] = ([r for r in recs if r.get("family") == fam], leaks)
+        else:
+            datasets[path.stem] = (recs, leaks)
 
     lines = ["| model | eval set | n (no-leak n) | acc | acc independent | acc redundant | pair acc | acc excl. leaked |",
              "|---|---|---|---|---|---|---|---|"]

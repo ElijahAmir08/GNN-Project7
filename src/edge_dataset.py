@@ -50,7 +50,7 @@ def examples_for_base(
     k = min(per_class, len(labeled[0]), len(labeled[1]))
     out = []
     for label in (0, 1):
-        for j, rec in enumerate(rng.sample(labeled[label], k)):
+        for rec in rng.sample(labeled[label], k):
             u, v = rec["candidate_edge"]
             out.append({
                 "graph_id": f"{base_id}_c{u}-{v}",

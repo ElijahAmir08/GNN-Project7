@@ -2,9 +2,10 @@ import random
 
 import pytest
 
-from src.hard_generator import make_example
+from src.hard_generator import MAKERS
+from src.laman_diagnostics import candidate_features
 from src.oracle import is_redundant
-from src.orbits import candidate_stabilizer_orbits, _orbits_by_enumeration
+from src.orbits import _orbits_by_enumeration, candidate_stabilizer_orbits
 from src.rigidity_labels import make_graph
 
 
@@ -19,11 +20,30 @@ def pyrigi_redundant(n, edges, cand) -> bool:
     return rank(edges + [cand]) == rank(edges)
 
 
-@pytest.mark.parametrize("family", ["decoy", "multi", "symmetric"])
+def pairs(family, n_seeds=6):
+    out = []
+    for seed in range(n_seeds):
+        pair = MAKERS[family](random.Random(seed), f"t{seed}")
+        if pair:
+            out.append(pair)
+    assert out, f"no {family} pairs generated"
+    return out
+
+
+@pytest.mark.parametrize("family", list(MAKERS))
+def test_pairs_are_feature_matched_with_opposite_labels(family):
+    for neg, pos in pairs(family):
+        assert (neg["label"], pos["label"]) == (0, 1)
+        assert neg["pair_id"] == pos["pair_id"]
+        f = [candidate_features(r["num_nodes"], [tuple(e) for e in r["edges"]], tuple(r["candidate_edge"]))
+             for r in (neg, pos)]
+        assert f[0] == f[1]
+
+
+@pytest.mark.parametrize("family", list(MAKERS))
 def test_labels_and_certificates(family):
-    for seed in range(6):
-        for want in (0, 1):
-            r = make_example(family, random.Random(seed), "t", want)
+    for pair in pairs(family):
+        for r in pair:
             n, cand = r["num_nodes"], tuple(r["candidate_edge"])
             edges = [tuple(e) for e in r["edges"]]
             assert edges == sorted(edges) and cand not in edges
@@ -41,21 +61,16 @@ def test_labels_and_certificates(family):
 
 
 def test_symmetric_family_has_swapped_certificates():
-    found = False
-    for seed in range(10):
-        r = make_example("symmetric", random.Random(seed), "t", 1)
-        if r["label"] == 1 and len(r["certificates"]) >= 2:
-            assert r["base_dependent"]
-            edges = [tuple(e) for e in r["edges"]]
-            orbits = candidate_stabilizer_orbits(r["num_nodes"], edges, tuple(r["candidate_edge"]))
-            assert any(len(o) > 1 for o in orbits)
-            found = True
-    assert found
+    for _, pos in pairs("symmetric"):
+        assert pos["base_dependent"] and len(pos["certificates"]) >= 2
+        edges = [tuple(e) for e in pos["edges"]]
+        orbits = candidate_stabilizer_orbits(pos["num_nodes"], edges, tuple(pos["candidate_edge"]))
+        assert any(len(o) > 1 for o in orbits)
 
 
 def test_fast_orbits_match_enumeration_on_generated_graphs():
     for family in ("decoy", "multi"):
-        for seed in range(5):
-            r = make_example(family, random.Random(seed), "t", seed % 2)
-            args = (r["num_nodes"], [tuple(e) for e in r["edges"]], tuple(r["candidate_edge"]))
-            assert candidate_stabilizer_orbits(*args) == _orbits_by_enumeration(*args)
+        for pair in pairs(family, n_seeds=4):
+            for r in pair:
+                args = (r["num_nodes"], [tuple(e) for e in r["edges"]], tuple(r["candidate_edge"]))
+                assert candidate_stabilizer_orbits(*args) == _orbits_by_enumeration(*args)

@@ -112,3 +112,23 @@ Families from src/hard_generator.py (360 examples, PyRigi-verified, minimal cert
   overshoots by ~1 edge, never yields a minimal valid certificate (F∧V 0%), and LOWERS slack
   (e.g. PGExplainer on MPNN 0.29 -> 0.19, GIN 0.39 -> 0.26). On every other dataset the
   corrections were neutral or helpful.
+
+## Fixes evaluated: three training regimes (Nov 18; results/comparison.md via scripts/compare_runs.py)
+original = edge_medium (3 seeds); mixed = + 11–16-node graphs + hard families (5 seeds);
+maskaug = mixed + oracle-labeled masked subgraphs (5 seeds). Same evaluation pipeline
+(scripts/run_eval_sweep.sh); hard set = matched pairs; PGExplainer explains predictions.
+- Accuracy: mixed training removes the hard-family failures (GIN symmetric 0.53 -> 1.00) and
+  generalizes to the never-seen chains (GIN 0.68 -> 0.97, DS-GIN 0.86 -> 0.99). GCN stays at
+  ~0.58 on chains in every regime (architecture limit). maskaug keeps accuracy.
+- Accuracy is not certificate reliance: after mixed training GIN/DS-GIN accept the true
+  certificate alone in only 21–80% of cases. Masked-subgraph augmentation raises this to
+  99–100% for MPNN, GIN and DS-GIN on every set (including unseen chains), and drives MPNN's
+  faithful-but-invalid rate (random subsets) from 27–40% to 0%.
+  Caveat: maskaug trains on certificate-like subgraphs; its gains are on held-out graphs, but the
+  training distribution is aligned with the faithfulness test by design.
+- Explainers: EdgeGrad (gradient on the unmasked graph) dominates PGExplainer and GNNExplainer
+  in every regime (slack 0.85–1.00 vs 0.0–0.6 on chains/decoy/multi). On symmetric graphs it ties
+  symmetric copies, so top-k splits them (slack ~0.46) — the predicted symmetry/minimality issue.
+- Combined fix: EdgeGrad + certificate step on maskaug models gives faithful AND valid
+  explanations in 99–100% of predicted-redundant cases on chains, decoy, multi and symmetric
+  (MPNN, GIN, DS-GIN), and the set-valued output stays symmetry-closed.

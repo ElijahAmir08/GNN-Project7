@@ -59,12 +59,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from src.data import NUM_NODE_FEATURES, record_to_data  # noqa: E402
 from src.models import build_model  # noqa: E402
+from src.certify import OracleCounter, alternatives, certify, select_faithful, symmetric_set  # noqa: E402
 from src.oracle import truth_label  # noqa: E402
 from src.orbits import orbit_average, orbit_select  # noqa: E402
 
 RUNS = ["ladder_gcn_medium", "ladder_mpnn_medium", "gin_edge_medium", "ladder_gin_medium", "ladder_dsgin_medium"]
-METHODS = ["oracle", "PGExplainer", "GNNExplainer", "random"]
-VARIANTS = ["raw", "orbit_avg", "orbit_sel"]
+METHODS = ["oracle", "PGExplainer", "GNNExplainer", "EdgeGrad", "random"]  # those present in a dump
+VARIANTS = ["raw", "orbit_avg", "orbit_sel", "cert", "cert_faith"]
+CERT_VARIANTS = ("cert", "cert_faith")
 
 
 def load_model(ck_path: Path):
@@ -79,6 +81,12 @@ def load_model(ck_path: Path):
 def model_pred(model, d, keep: np.ndarray) -> int:
     ei = d.edge_index[:, torch.from_numpy(np.repeat(keep, 2))]
     return model(d.x, ei, None, d.candidate).argmax(-1).item()
+
+
+@torch.no_grad()
+def model_prob(model, d, keep: np.ndarray, cls: int) -> float:
+    ei = d.edge_index[:, torch.from_numpy(np.repeat(keep, 2))]
+    return torch.softmax(model(d.x, ei, None, d.candidate), -1)[0, cls].item()
 
 
 def ranking(scores, orbits, variant, k) -> np.ndarray:
@@ -124,7 +132,39 @@ def grade(model, ex, method, variant) -> dict:
     pred = model_pred(model, d, np.ones(E, dtype=bool))
     k = len(r["circuit_edges"]) - 1 if truth == 1 else max(1, round(E / 2))
 
-    sel = selection(scores, orbits, variant, k)
+    extra = {}
+    if variant in CERT_VARIANTS:
+        # Certificate-constrained: ranking -> minimal valid certificate; for
+        # cert_faith, pick the most model-faithful of several alternatives.
+        oc = OracleCounter(n, edges, cand)
+        cert = certify(oc, scores)
+        if cert is None:  # candidate not redundant: no certificate exists
+            sel = np.argsort(-scores, kind="stable")[:k]
+            extra["fallback"] = True
+        else:
+            extra["fallback"] = False
+            certs = [cert]
+            if variant == "cert_faith":
+                def prob(idx):
+                    keep_c = np.zeros(E, dtype=bool)
+                    keep_c[idx] = True
+                    return model_prob(model, d, keep_c, pred)
+                certs = alternatives(oc, scores, cert)
+                cert, _ = select_faithful(certs, prob)
+                if any(len(o) > 1 for o in orbits):
+                    sym = symmetric_set(n, edges, cand, cert, certs, orbits)
+                    members_faithful = []
+                    for mem in sym["members"]:
+                        keep_m = np.zeros(E, dtype=bool)
+                        keep_m[mem] = True
+                        members_faithful.append(model_pred(model, d, keep_m) == pred)
+                    extra.update(set_complete=sym["complete"], set_members=len(sym["members"]),
+                                 set_members_faithful=float(np.mean(members_faithful)))
+            extra["n_certs_found"] = len(certs)
+            sel = np.array(cert)
+        extra["oracle_calls"] = oc.calls
+    else:
+        sel = selection(scores, orbits, variant, k)
     keep = np.zeros(E, dtype=bool)
     keep[sel] = True
     S = [edges[i] for i in sel]
@@ -142,9 +182,15 @@ def grade(model, ex, method, variant) -> dict:
         "model_nec": m_rest != pred,
         "size": len(sel),
         "k": k,
+        **extra,
     }
     if truth == 1:
-        j = shortest_valid_prefix(n, edges, cand, ranking(scores, orbits, variant, k))
+        if variant in CERT_VARIANTS:  # the certificate first, then the rest by score
+            rest_order = [i for i in np.argsort(-scores, kind="stable") if not keep[i]]
+            order = np.array(list(sel) + rest_order)
+        else:
+            order = ranking(scores, orbits, variant, k)
+        j = shortest_valid_prefix(n, edges, cand, order)
         out["cert_eff"] = (k / j) if j else 0.0
         out["slack"] = ((E - j) / (E - k) if E > k else 1.0) if j else 0.0
         out["valid_k1"] = bool(j) and j <= k + 1
@@ -198,7 +244,9 @@ def summarize(model, examples, method, variant) -> tuple[dict, dict]:
         "model_ok_on_S": pct([x["model_ok_on_S"] for x in rows]),
         "model_ok_on_rest": pct([x["model_ok_on_rest"] for x in rows]),
         "overshoot": float(np.mean([x["size"] - x["k"] for x in rows])),
-        **{key: mean_of(key) for key in ("recall", "slack", "valid_k1", "valid_k2")},
+        **{key: mean_of(key) for key in ("recall", "slack", "valid_k1", "valid_k2", "oracle_calls",
+                                          "n_certs_found", "fallback", "set_complete", "set_members",
+                                          "set_members_faithful")},
     }
     return stats, {k: len(v) for k, v in g.items()}
 
@@ -229,7 +277,8 @@ def main() -> None:
                     dsl = ds if fam is None else f"{ds}:{fam}"
                     if dsl not in ds_labels:
                         ds_labels.append(dsl)
-                    for method in METHODS:
+                    present = by_family[fam][0]["scores"]
+                    for method in [m for m in METHODS if m in present]:
                         for variant in VARIANTS:
                             stats, group_counts = summarize(model, by_family[fam], method, variant)
                             agg[(dsl, run, method, variant)].append(stats)
@@ -260,7 +309,7 @@ def main() -> None:
                 s = agg.get((ds, run, method, "raw"))
                 if not s:
                     continue
-                col = lambda key, d=1: fmt([x[key] for x in s], d)  # noqa: E731
+                col = lambda key, d=1, s=s: fmt([x[key] for x in s], d)  # noqa: E731
                 out.append(f"| {run} | {method} | **{col('FV')}** | {col('F_notV')} | {col('V_notF')} | {col('neither')} "
                            f"| {col('TP_FV')} | {col('FP_faithful')} | {col('FN_faithful')} | {col('cert_eff', 2)} "
                            f"| {col('truth_nec')} | {col('model_nec')} | {col('model_ok_on_S')} | {col('model_ok_on_rest')} |")
@@ -279,14 +328,49 @@ def main() -> None:
         out.append("\n### Symmetry corrections (F∧V % and certificate efficiency)\n")
         out.append("| model | explainer | F∧V raw | F∧V orbit_avg | F∧V orbit_sel | slack raw | slack orbit_avg | slack orbit_sel | orbit_sel overshoot |")
         out.append("|---|---|---|---|---|---|---|---|---|")
+        sym_variants = ("raw", "orbit_avg", "orbit_sel")
         for run in args.runs:
-            for method in ("PGExplainer", "GNNExplainer"):
-                ss = {v: agg.get((ds, run, method, v)) for v in VARIANTS}
+            for method in ("PGExplainer", "GNNExplainer", "EdgeGrad"):
+                ss = {v: agg.get((ds, run, method, v)) for v in sym_variants}
                 if not all(ss.values()):
                     continue
-                out.append(f"| {run} | {method} | " + " | ".join(fmt([x["FV"] for x in ss[v]]) for v in VARIANTS)
-                           + " | " + " | ".join(fmt([x["slack"] for x in ss[v]], 2) for v in VARIANTS)
+                out.append(f"| {run} | {method} | " + " | ".join(fmt([x["FV"] for x in ss[v]]) for v in sym_variants)
+                           + " | " + " | ".join(fmt([x["slack"] for x in ss[v]], 2) for v in sym_variants)
                            + f" | {fmt([x['overshoot'] for x in ss['orbit_sel']], 2)} |")
+
+        out.append("\n### Certificate-constrained explainers (cert = ranking -> minimal valid certificate; "
+                   "cert_faith = most model-faithful of up to 8 alternative certificates)\n")
+        out.append("F∧V over examples the model predicts redundant. Validity is guaranteed whenever the candidate is "
+                   "truly redundant, so the informative columns are faithfulness and the gap to raw top-k. "
+                   "fallback = candidate not redundant (no certificate exists; raw top-k used).\n")
+        out.append("| model | explainer | F∧V raw | F∧V cert | F∧V cert_faith | TP faithful: cert | TP faithful: cert_faith "
+                   "| certificates found | oracle calls | fallback % |")
+        out.append("|---|---|---|---|---|---|---|---|---|---|")
+        for run in args.runs:
+            for method in ("random", "PGExplainer", "GNNExplainer", "EdgeGrad"):
+                ss = {v: agg.get((ds, run, method, v)) for v in ("raw", "cert", "cert_faith")}
+                if not all(ss.values()):
+                    continue
+                out.append(f"| {run} | {method} | {fmt([x['FV'] for x in ss['raw']])} | {fmt([x['FV'] for x in ss['cert']])} "
+                           f"| **{fmt([x['FV'] for x in ss['cert_faith']])}** | {fmt([x['TP_FV'] for x in ss['cert']])} "
+                           f"| {fmt([x['TP_FV'] for x in ss['cert_faith']])} | {fmt([x['n_certs_found'] for x in ss['cert_faith']], 1)} "
+                           f"| {fmt([x['oracle_calls'] for x in ss['cert_faith']], 0)} | {fmt([100 * x['fallback'] for x in ss['cert_faith']])} |")
+
+        rows_set = [(run, method, agg.get((ds, run, method, "cert_faith"))) for run in args.runs
+                    for method in ("random", "PGExplainer", "GNNExplainer", "EdgeGrad")]
+        rows_set = [(r, m, s_) for r, m, s_ in rows_set if s_ and any(x["set_members"] == x["set_members"] for x in s_)]
+        if rows_set:
+            out.append("\n### Set-valued symmetric explanations (truly redundant examples with nontrivial orbits)\n")
+            out.append("Each member is a minimal valid certificate; complete = the members' union equals the union of "
+                       "the edge orbits of the chosen certificate (symmetry-closed). Compare with whole-orbit "
+                       "selection (orbit_sel), which is symmetric but not minimal.\n")
+            out.append("| model | explainer | set complete % | members per set | members faithful % | orbit_sel overshoot | orbit_sel F∧V |")
+            out.append("|---|---|---|---|---|---|---|")
+            for run, method, s_ in rows_set:
+                osel = agg.get((ds, run, method, "orbit_sel")) or []
+                out.append(f"| {run} | {method} | {fmt([100 * x['set_complete'] for x in s_])} | {fmt([x['set_members'] for x in s_], 2)} "
+                           f"| {fmt([100 * x['set_members_faithful'] for x in s_])} | {fmt([x['overshoot'] for x in osel], 2)} "
+                           f"| {fmt([x['FV'] for x in osel])} |")
     text = "\n".join(out) + "\n"
     args.out.write_text(text, encoding="utf-8")
     args.out.with_suffix(".json").write_text(json.dumps({"|".join(k): v for k, v in agg.items()}, indent=1))
