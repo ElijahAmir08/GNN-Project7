@@ -145,3 +145,22 @@ maskaug = mixed + oracle-labeled masked subgraphs (5 seeds). Same evaluation pip
   is not just teaching the test; certificate-shaped masks matter most on lattices/large graphs.
 - Pair (endpoint-only) readout: +15–26 points on lattices (MPNN 0.91), MPNN 1-sum violations
   25.6% -> 9.4%, but −8–25 points on chains/large Laman graphs. Trade-off; try mean pooling.
+
+## Steps 0 and 1: where models fail, and a provable 1-WL limitation (Nov 18)
+Step 0 (scripts/error_analysis.py, no training; models run 4 rounds):
+- Matched pairs on stress sets: accuracy ~1.00 when the certificate is within 2 hops, 0.57–0.91
+  at 3–4 hops (still inside the receptive field), 0.52–0.77 at 5–6 hops. Failure starts inside
+  the receptive field, so limited reach is not the main cause.
+- Size: sum-readout models fall from ~0.95 (≤20 joints) to 0.54–0.72 (71+); pair readout recovers
+  at 41+ (0.76–0.89). Cut vertices in random graphs do not predict errors (0.82 vs 0.82).
+Step 1 (scripts/wl_collision_search.py, src/wl_family.py):
+- Exhaustive search over all graphs with ≤ 7 vertices + 20k random 8–10-vertex graphs (~410k
+  candidates) found exactly one 1-WL-indistinguishable pair with different labels: the wheel
+  W_6 (rigid, candidate redundant) vs two K4s sharing a hub (cut vertex = hinge, independent).
+- It generalizes to an infinite family: hub + C_{2k} (wheel) vs hub + two C_k (hinged), verified
+  for k = 3..15 (7–31 joints): identical 1-WL colorings, opposite labels (oracle + PyRigi).
+- GCN, MPNN, GIN in every regime give identical outputs on 100% of pairs (provably ≤ 50%); all
+  predict "redundant" for both. DS-GIN distinguishes the pair exactly for k ≤ 6 and never for
+  k ≥ 7: extra expressivity helps only up to a size set by its depth (4 rounds).
+- So: 1-WL limitations are rare on random graphs (expressivity is not why models fail there), but
+  they exist exactly at cut vertices / hinges, and fixing them needs expressivity AND depth.
