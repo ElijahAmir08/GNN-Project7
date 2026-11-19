@@ -30,6 +30,57 @@ redundancy).
 Running notes, findings and design decisions are in
 [`notes/edge_task_design.md`](notes/edge_task_design.md).
 
+## Results at a Glance
+
+Six figures summarizing what we have found so far. Regenerate them from the
+saved results with `python scripts/make_figures.py` (writes `figures/*.png`).
+The full log of everything tried, with all tables, is in
+[`notes/edge_task_design.md`](notes/edge_task_design.md).
+
+**1. Accuracy across training regimes.** Mixed and masked training make every
+model near-perfect on familiar graph families and transfer to Elijah's unseen
+chains, but no regime solves large Laman graphs, and lattices improve only with
+the endpoint-only ("pair") readout.
+
+![Accuracy across models, training regimes and test sets](figures/fig1_accuracy.png)
+
+**2. Accuracy is not the same as relying on the proof.** After mixed training,
+GIN is ~100% accurate on the hard families yet keeps its "redundant" answer
+when shown only the true certificate in just 21–58% of cases. Training on
+oracle-labelled masked subgraphs fixes this; random masks alone already give
+most of the gain.
+
+![Certificate acceptance by training regime](figures/fig2_certificate_acceptance.png)
+
+**3. Explainers.** A gradient on the unmasked graph (EdgeGrad) reaches a
+minimal valid certificate almost immediately; GNNExplainer and PGExplainer,
+which optimize soft masks starting from half-strength edges, are near the
+random baseline. On symmetric graphs every ranking ties symmetric copies, which
+is the symmetry-versus-minimality conflict.
+
+![Slack score by explainer](figures/fig3_explainers.png)
+
+**4. Rule tests.** Models obey monotonicity (adding bars keeps redundancy,
+removing bars keeps independence) but not the 1-sum law: attaching a graph at a
+single joint changes their answer, more often the larger the attachment.
+
+![Rule-test violations](figures/fig4_rule_tests.png)
+
+**5. Where models fail.** Accuracy already drops when the certificate lies
+3–4 hops away, inside what a 4-round model can see, so limited reach is not the
+main cause. The whole-graph sum readout makes models size-sensitive; the pair
+readout recovers on the largest graphs but loses accuracy at medium sizes.
+
+![Accuracy by certificate reach and graph size](figures/fig5_reach_and_size.png)
+
+**6. A provable limitation.** A wheel (rigid, the bar is redundant) and two
+wheels sharing a hub (a hinge at a cut vertex, the bar is independent) receive
+identical 1-WL colorings at every size, so GCN, MPNN and GIN output identical
+values on both. DS-GIN separates them only up to k = 6, so both expressive power
+and depth are needed. See `src/wl_family.py`.
+
+![The wheel/hinge family that 1-WL GNNs cannot separate](figures/fig6_wl_family.png)
+
 ## Setup
 
 Python 3.11. Everything runs on CPU (graphs have at most ~20 nodes).
@@ -69,6 +120,9 @@ gitignored; every file is reproducible with the commands below (fixed seeds).
 | `src/models.py` | Model ladder: `features`, `gcn`, `mpnn`, `gin`, `dsgin` |
 | `src/orbits.py` | Edge orbits under automorphisms fixing the candidate; orbit averaging / whole-orbit selection |
 | `src/certify.py` | Certificate extraction from a ranking, alternative certificates, faithful selection, symmetric certificate sets |
+| `src/ood_generator.py`, `src/truss_generator.py` | Out-of-distribution stress suite (large Laman graphs, long chains, diluted triangular lattices) and damaged bridge trusses |
+| `src/wl_family.py` | Wheel vs. hinged-wheels family that no 1-WL GNN can separate |
+| `figures/` | Summary figures shown above (`scripts/make_figures.py`) |
 | `scripts/` | Data builders, training, explainers, evaluation and tables (see Pipeline) |
 | `tests/` | Unit tests (`pytest -q tests`) |
 | `notes/` | Design notes and findings |
