@@ -38,7 +38,7 @@ def set_seed(seed: int) -> None:
 
 
 def build_model(args):
-    return _build(args.model, NUM_NODE_FEATURES, args.hidden, args.layers, args.dropout)
+    return _build(args.model, NUM_NODE_FEATURES, args.hidden, args.layers, args.dropout, args.readout)
 
 
 def logits_for(model, batch, kind):
@@ -124,6 +124,8 @@ def main() -> None:
     p.add_argument("--hidden", type=int, default=64)
     p.add_argument("--layers", type=int, default=4)
     p.add_argument("--dropout", type=float, default=0.1)
+    p.add_argument("--readout", choices=["sum", "pair"], default="sum",
+                   help="sum: candidate pair + whole-graph sum pool; pair: candidate pair only")
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight-decay", type=float, default=0.0)
     p.add_argument("--batch-size", type=int, default=64)

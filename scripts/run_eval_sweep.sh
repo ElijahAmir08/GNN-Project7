@@ -6,7 +6,9 @@
 # Usage: scripts/run_eval_sweep.sh TRAIN_DATA RUN [RUN ...]
 #   TRAIN_DATA  training JSON used for leakage checks and as --fit-data
 #   RUN         results/<RUN>/seed*/model.pt must exist
-# Outputs: results/eval_<first-run>.md (accuracy), results/oracle_<first-run>.md
+# Outputs: results/eval_<first-run>.md (accuracy incl. OOD suite),
+#          results/rules_<first-run>.md (metamorphic rule tests),
+#          results/oracle_<first-run>.md (explanations)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PY=.venv/bin/python
@@ -16,12 +18,15 @@ TAG=${RUNS[0]}
 HARD=data_new/generated/hard_eval.json
 CHAIN=data_new/generated/chain_matched_eval.json
 LARGE=data_new/generated/henneberg_large_eval.json
+OOD=data_new/generated/ood_suite.json
 
 $PY -W ignore scripts/eval_checkpoints.py --runs "${RUNS[@]}" --train-data "$TRAIN" \
-    --data data/generated/edge_medium.json "$HARD" "$CHAIN" "$LARGE" --out "results/eval_${TAG}.md"
+    --data data/generated/edge_medium.json "$HARD" "$CHAIN" "$LARGE" "$OOD" --out "results/eval_${TAG}.md"
 
 graph_runs=()
 for r in "${RUNS[@]}"; do [[ $r == *features* ]] || graph_runs+=("$r"); done
+
+$PY -W ignore scripts/rule_tests.py --runs "${graph_runs[@]}" --out "results/rules_${TAG}.md"
 
 # Explainers: one process per (run, seed), at most 5 in parallel.
 jobs_running=0

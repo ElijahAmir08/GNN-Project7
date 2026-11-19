@@ -33,7 +33,7 @@ from torch_geometric.loader import DataLoader
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from src.data import NUM_NODE_FEATURES, record_to_data  # noqa: E402
-from src.models import build_model, shortcut_features  # noqa: E402
+from src.models import model_from_config, shortcut_features  # noqa: E402
 
 DEFAULT_RUNS = ["features_edge_medium", "ladder_gcn_medium", "ladder_mpnn_medium",
                 "gin_edge_medium", "ladder_gin_medium", "ladder_dsgin_medium"]
@@ -129,7 +129,7 @@ def main() -> None:
             for ck_path in ckpts:
                 ck = torch.load(ck_path, weights_only=False)
                 cfg = ck["config"]
-                model = build_model(cfg["model"], NUM_NODE_FEATURES, cfg["hidden"], cfg["layers"], cfg["dropout"])
+                model = model_from_config(cfg, NUM_NODE_FEATURES)
                 model.load_state_dict(ck["state_dict"])
                 model.eval()
                 per_seed.append(scores(recs, predict(model, cfg["model"], recs), leaks))

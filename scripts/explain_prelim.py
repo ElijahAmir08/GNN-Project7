@@ -37,7 +37,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from src.data import NUM_NODE_FEATURES, directed_to_undirected, record_to_data  # noqa: E402
-from src.models import build_model  # noqa: E402
+from src.models import model_from_config  # noqa: E402
 from src.orbits import (candidate_stabilizer_orbits, orbit_average, orbit_select,  # noqa: E402
                         splits_an_orbit, topk)
 
@@ -75,7 +75,7 @@ def fit_temperature(model, val_records, target_margin: float) -> float:
 def load_model(run_dir: Path, seed: int):
     ckpt = torch.load(run_dir / f"seed{seed}" / "model.pt", weights_only=False)
     cfg = ckpt["config"]
-    model = build_model(cfg["model"], NUM_NODE_FEATURES, cfg["hidden"], cfg["layers"], cfg["dropout"])
+    model = model_from_config(cfg, NUM_NODE_FEATURES)
     model.load_state_dict(ckpt["state_dict"])
     return model.eval()
 

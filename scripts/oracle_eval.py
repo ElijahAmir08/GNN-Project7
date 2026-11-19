@@ -58,7 +58,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from src.data import NUM_NODE_FEATURES, record_to_data  # noqa: E402
-from src.models import build_model  # noqa: E402
+from src.models import model_from_config  # noqa: E402
 from src.certify import OracleCounter, alternatives, certify, select_faithful, symmetric_set  # noqa: E402
 from src.oracle import truth_label  # noqa: E402
 from src.orbits import orbit_average, orbit_select  # noqa: E402
@@ -72,7 +72,7 @@ CERT_VARIANTS = ("cert", "cert_faith")
 def load_model(ck_path: Path):
     ck = torch.load(ck_path, weights_only=False)
     cfg = ck["config"]
-    m = build_model(cfg["model"], NUM_NODE_FEATURES, cfg["hidden"], cfg["layers"], cfg["dropout"])
+    m = model_from_config(cfg, NUM_NODE_FEATURES)
     m.load_state_dict(ck["state_dict"])
     return m.eval()
 

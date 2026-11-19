@@ -45,7 +45,7 @@ from src.oracle import truth_label  # noqa: E402
 
 
 def masked_copies(args) -> list[dict]:
-    rec, seed, n_random = args
+    rec, seed, n_random, kinds = args
     rng = random.Random(seed)
     n, cand = rec["num_nodes"], tuple(rec["candidate_edge"])
     edges = [tuple(e) for e in rec["edges"]]
@@ -53,7 +53,7 @@ def masked_copies(args) -> list[dict]:
     for _ in range(n_random):
         keep = rng.uniform(0.3, 0.9)
         subsets.append(("random", [e for e in edges if rng.random() < keep]))
-    if rec["label"] == 1 and rec.get("circuit_edges"):
+    if rec["label"] == 1 and rec.get("circuit_edges") and {"near_cert", "cert_plus"} & kinds:
         cert = [tuple(e) for e in rec["circuit_edges"] if tuple(e) != cand]
         drop = rng.choice(cert)
         rest = [e for e in edges if e not in cert]
@@ -61,9 +61,11 @@ def masked_copies(args) -> list[dict]:
         # edge count does not reveal the label (the oracle still decides it:
         # extras can complete another certificate in multi-certificate bases).
         extra = rng.sample(rest, rng.randint(0, len(rest)))
-        subsets.append(("near_cert", [e for e in cert if e != drop] + extra))
+        if "near_cert" in kinds:
+            subsets.append(("near_cert", [e for e in cert if e != drop] + extra))
         extra = rng.sample(rest, rng.randint(0, len(rest)))
-        subsets.append(("cert_plus", cert + extra))
+        if "cert_plus" in kinds:
+            subsets.append(("cert_plus", cert + extra))
     out = []
     for i, (kind, sub) in enumerate(subsets):
         sub = sorted(set(sub))
@@ -86,6 +88,9 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--data", type=Path, default=ROOT / "data_new/generated/mixed_train.json")
     p.add_argument("--n-random", type=int, default=1, help="random masks per parent")
+    p.add_argument("--kinds", nargs="+", default=["random", "near_cert", "cert_plus"],
+                   choices=["random", "near_cert", "cert_plus"],
+                   help="mask kinds to generate; '--kinds random' is the ablation without certificate-shaped masks")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--workers", type=int, default=48)
     p.add_argument("--out", type=Path, default=ROOT / "data_new/generated/mixed_masked_train.json")
@@ -94,7 +99,9 @@ def main() -> None:
     blob = json.loads(args.data.read_text())
     records = blob["records"]
     parents = [r for r in records if r["split"] in ("train", "val")]  # never augment test
-    tasks = [(r, args.seed * 1_000_003 + i, args.n_random) for i, r in enumerate(parents)]
+    kinds = set(args.kinds)
+    n_random = args.n_random if "random" in kinds else 0
+    tasks = [(r, args.seed * 1_000_003 + i, n_random, kinds) for i, r in enumerate(parents)]
     with Pool(args.workers) as pool:
         masked = [m for group in pool.map(masked_copies, tasks, chunksize=16) for m in group]
 

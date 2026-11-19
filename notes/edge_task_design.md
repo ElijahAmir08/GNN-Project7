@@ -132,3 +132,16 @@ maskaug = mixed + oracle-labeled masked subgraphs (5 seeds). Same evaluation pip
 - Combined fix: EdgeGrad + certificate step on maskaug models gives faithful AND valid
   explanations in 99–100% of predicted-redundant cases on chains, decoy, multi and symmetric
   (MPNN, GIN, DS-GIN), and the set-valued output stays symmetry-closed.
+
+## Rule tests, OOD suite, trusses, ablation, readout (Nov 18; research log artifact has all tables)
+- Rule tests (scripts/rule_tests.py): monotonicity learned (add/delete violations 0–3% for
+  MPNN/GIN/DS-GIN); the 1-sum law is not (4–26%, worse for larger attachments, all regimes).
+- OOD suite (scripts/build_ood_suite.py; 24–100 joints, certificates of 24–50 bars): best
+  accuracy ood_chain 0.96, ood_large 0.82, lattice 0.91 — the real generalization benchmark.
+- Trusses (src/truss_generator.py; damaged Pratt/Howe/Warren, repair framing): GNNs 0.77–0.89
+  vs feature baseline 0.80; they miss repairs that would work. Not feature-matched yet.
+- Random-mask ablation: random masks alone raise GIN/DS-GIN certificate acceptance to 97–100%
+  on hard families and chains, and keep EdgeGrad + certificate F∧V at 97–100%. Masked training
+  is not just teaching the test; certificate-shaped masks matter most on lattices/large graphs.
+- Pair (endpoint-only) readout: +15–26 points on lattices (MPNN 0.91), MPNN 1-sum violations
+  25.6% -> 9.4%, but −8–25 points on chains/large Laman graphs. Trade-off; try mean pooling.

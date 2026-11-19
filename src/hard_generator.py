@@ -117,7 +117,7 @@ class _Builder:
         self.edges.update(tuple(sorted((mapping[x], mapping[y]))) for x, y in d_edges)
 
 
-def _finish(builder, cand, bridge_circuits, family, rng, base_id):
+def _finish(builder, cand, bridge_circuits, family, rng, base_id, cert_tries=40):
     n = builder.n
     perm = list(range(n))
     rng.shuffle(perm)
@@ -128,7 +128,7 @@ def _finish(builder, cand, bridge_circuits, family, rng, base_id):
     certs = []
     if label:
         seeds = [{relabel(e) for e in circ} for circ in bridge_circuits]
-        certs = [sorted(cert + [c]) for cert in _certificates(n, edges, c, seeds, rng)]
+        certs = [sorted(cert + [c]) for cert in _certificates(n, edges, c, seeds, rng, tries=cert_tries)]
     return {
         "graph_id": f"{base_id}_c{c[0]}-{c[1]}",
         "base_id": base_id,

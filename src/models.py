@@ -37,12 +37,26 @@ def mlp(dims: list[int], dropout: float = 0.0) -> nn.Sequential:
     return nn.Sequential(*layers)
 
 
-class CandidateReadout(nn.Module):
-    """Base class: subclasses implement node_embeddings -> [N, emb_dim]."""
+READOUTS = ("sum", "pair")
 
-    def __init__(self, emb_dim: int, hidden: int, dropout: float):
+
+class CandidateReadout(nn.Module):
+    """Base class: subclasses implement node_embeddings -> [N, emb_dim].
+
+    readout="sum"  [h_u + h_v, h_u * h_v, sum-pool(h)]  (original)
+    readout="pair" [h_u + h_v, h_u * h_v] only: no whole-graph term, so
+                   structure far from the candidate can only matter through
+                   message passing. Motivated by the 1-sum law (attaching a
+                   graph at one vertex never changes the label), which the
+                   sum readout violates directly.
+    """
+
+    def __init__(self, emb_dim: int, hidden: int, dropout: float, readout: str = "sum"):
         super().__init__()
-        self.head = mlp([3 * emb_dim, hidden, 2], dropout=dropout)
+        if readout not in READOUTS:
+            raise ValueError(readout)
+        self.readout = readout
+        self.head = mlp([(3 if readout == "sum" else 2) * emb_dim, hidden, 2], dropout=dropout)
 
     def node_embeddings(self, x, edge_index, batch):
         raise NotImplementedError
@@ -52,14 +66,16 @@ class CandidateReadout(nn.Module):
             batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
         h = self.node_embeddings(x, edge_index, batch)
         hu, hv = h[candidate[:, 0]], h[candidate[:, 1]]
-        g = global_add_pool(h, batch)
-        return self.head(torch.cat([hu + hv, hu * hv, g], dim=-1))
+        parts = [hu + hv, hu * hv]
+        if self.readout == "sum":
+            parts.append(global_add_pool(h, batch))
+        return self.head(torch.cat(parts, dim=-1))
 
 
 # --------------------------------------------------------------------- rung 1
 class EdgeGCN(CandidateReadout):
-    def __init__(self, in_dim, hidden=64, num_layers=4, dropout=0.1):
-        super().__init__(in_dim + num_layers * hidden, hidden, dropout)
+    def __init__(self, in_dim, hidden=64, num_layers=4, dropout=0.1, readout="sum"):
+        super().__init__(in_dim + num_layers * hidden, hidden, dropout, readout)
         dims = [in_dim] + [hidden] * num_layers
         self.convs = nn.ModuleList(GCNConv(dims[i], dims[i + 1]) for i in range(num_layers))
         self.norms = nn.ModuleList(nn.BatchNorm1d(hidden) for _ in range(num_layers))
@@ -91,8 +107,8 @@ class EdgeMPNN(CandidateReadout):
     """Gilmer et al. (2017)-style MPNN without edge features: MLP messages,
     sum aggregation, GRU node update (weights shared across steps)."""
 
-    def __init__(self, in_dim, hidden=64, num_layers=4, dropout=0.1):
-        super().__init__(in_dim + num_layers * hidden, hidden, dropout)
+    def __init__(self, in_dim, hidden=64, num_layers=4, dropout=0.1, readout="sum"):
+        super().__init__(in_dim + num_layers * hidden, hidden, dropout, readout)
         self.num_layers = num_layers
         self.encode = nn.Linear(in_dim, hidden)
         self.convs = nn.ModuleList(MessageMLPConv(hidden) for _ in range(num_layers))
@@ -108,8 +124,8 @@ class EdgeMPNN(CandidateReadout):
 
 # --------------------------------------------------------------------- rung 3
 class EdgeGIN(CandidateReadout):
-    def __init__(self, in_dim, hidden=64, num_layers=4, dropout=0.1):
-        super().__init__(in_dim + num_layers * hidden, hidden, dropout)
+    def __init__(self, in_dim, hidden=64, num_layers=4, dropout=0.1, readout="sum"):
+        super().__init__(in_dim + num_layers * hidden, hidden, dropout, readout)
         dims = [in_dim] + [hidden] * num_layers
         self.convs = nn.ModuleList(
             GINConv(mlp([dims[i], hidden, hidden]), train_eps=True) for i in range(num_layers)
@@ -153,9 +169,9 @@ class EdgeDSGIN(CandidateReadout):
     A final ordinary GIN layer gives PGExplainer an [N, d] embedding.
     """
 
-    def __init__(self, in_dim, hidden=64, num_layers=3, dropout=0.1):
+    def __init__(self, in_dim, hidden=64, num_layers=3, dropout=0.1, readout="sum"):
         emb = in_dim + num_layers * hidden + hidden
-        super().__init__(emb, hidden, dropout)
+        super().__init__(emb, hidden, dropout, readout)
         dims = [in_dim + 1] + [hidden] * num_layers
         self.convs = nn.ModuleList(CopyGINConv(dims[i], hidden) for i in range(num_layers))
         self.final = GINConv(mlp([in_dim + num_layers * hidden, hidden, hidden]), train_eps=True)
@@ -223,7 +239,14 @@ GRAPH_MODELS = {"gcn": EdgeGCN, "mpnn": EdgeMPNN, "gin": EdgeGIN, "dsgin": EdgeD
 ALL_MODELS = ["features", *GRAPH_MODELS]
 
 
-def build_model(name: str, in_dim: int, hidden: int, layers: int, dropout: float) -> nn.Module:
+def build_model(name: str, in_dim: int, hidden: int, layers: int, dropout: float,
+                readout: str = "sum") -> nn.Module:
     if name == "features":
         return FeatureMLP(hidden, dropout)
-    return GRAPH_MODELS[name](in_dim, hidden, layers, dropout)
+    return GRAPH_MODELS[name](in_dim, hidden, layers, dropout, readout)
+
+
+def model_from_config(cfg: dict, in_dim: int) -> nn.Module:
+    """Rebuild a model from a saved training config (old configs: readout='sum')."""
+    return build_model(cfg["model"], in_dim, cfg["hidden"], cfg["layers"], cfg["dropout"],
+                       cfg.get("readout", "sum"))
