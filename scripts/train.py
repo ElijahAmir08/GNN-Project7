@@ -74,16 +74,24 @@ def run_seed(args, splits, seed: int, out_dir: Path) -> dict:
     }
     model = build_model(args)
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    recurrent = hasattr(model, "rounds")
+    round_rng = random.Random(seed)
+    if recurrent:
+        args.eval_rounds = args.eval_rounds or args.rounds_max
 
     best_val, best_state, best_epoch, history = -1.0, None, 0, []
     t0 = time.time()
     for epoch in range(1, args.epochs + 1):
         model.train()
         for batch in loaders["train"]:
+            if recurrent:  # a different depth every batch, so depth can change at test time
+                model.rounds = round_rng.randint(args.rounds_min, args.rounds_max)
             opt.zero_grad()
             loss = F.cross_entropy(logits_for(model, batch, args.model), batch.y)
             loss.backward()
             opt.step()
+        if recurrent:
+            model.rounds = args.eval_rounds
         tr = evaluate(model, loaders["train"], args.model)
         va = evaluate(model, loaders["val"], args.model)
         history.append({"epoch": epoch, "train_acc": tr["acc"], "train_loss": tr["loss"],
@@ -126,6 +134,10 @@ def main() -> None:
     p.add_argument("--dropout", type=float, default=0.1)
     p.add_argument("--readout", choices=["sum", "pair"], default="sum",
                    help="sum: candidate pair + whole-graph sum pool; pair: candidate pair only")
+    p.add_argument("--rounds-min", type=int, default=4, help="recurrent models: fewest rounds per training batch")
+    p.add_argument("--rounds-max", type=int, default=10, help="recurrent models: most rounds per training batch")
+    p.add_argument("--eval-rounds", type=int, default=None,
+                   help="recurrent models: rounds for validation/test and saved default (default: --rounds-max)")
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight-decay", type=float, default=0.0)
     p.add_argument("--batch-size", type=int, default=64)

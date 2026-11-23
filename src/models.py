@@ -9,6 +9,8 @@ Expressivity ladder (all permutation-equivariant, all explainer-compatible):
   3     gin        = 1-WL                    simplest injective sum aggregation
   4     dsgin      > 1-WL                    node-marked subgraph GNN (DS-GNN):
                                              one GIN run per marked node, averaged
+  -     recmpnn    = 1-WL, any depth         weight-tied MPNN, rounds set at run time
+  -     recdsgin   > 1-WL, any depth         weight-tied subgraph GNN, rounds set at run time
 
 Shared candidate readout: [h_u + h_v, h_u * h_v, sum-pool(h)], invariant to
 swapping u and v and to node relabelings.
@@ -198,6 +200,82 @@ class EdgeDSGIN(CandidateReadout):
         return torch.cat([hcat, torch.relu(self.final(hcat, edge_index))], dim=-1)
 
 
+# ------------------------------------------------------- recurrent variants
+class _SharedMessage(MessagePassing):
+    """m_ij = MLP([h_i, h_j]) without normalization (its statistics would
+    shift with the number of rounds), summed over neighbours."""
+
+    def __init__(self, dim, node_dim=-2):
+        super().__init__(aggr="add", node_dim=node_dim)
+        self.msg = nn.Sequential(nn.Linear(2 * dim, dim), nn.ReLU(), nn.Linear(dim, dim))
+
+    def forward(self, h, edge_index):
+        return self.propagate(edge_index, h=h)
+
+    def message(self, h_i, h_j):
+        return self.msg(torch.cat([h_i, h_j], dim=-1))
+
+
+class EdgeRecMPNN(CandidateReadout):
+    """Weight-tied recurrent MPNN: ONE message function and ONE GRU applied
+    `rounds` times. Because every round is the same computation, the number of
+    rounds can change between training batches and at test time (more rounds =
+    information from farther away). Bounded by 1-WL. The encoded input is fed
+    to the GRU every round so the candidate marks are never forgotten."""
+
+    def __init__(self, in_dim, hidden=64, num_layers=6, dropout=0.1, readout="sum"):
+        super().__init__(in_dim + hidden, hidden, dropout, readout)
+        self.rounds = num_layers
+        self.encode = nn.Linear(in_dim, hidden)
+        self.conv = _SharedMessage(hidden)
+        self.gru = nn.GRUCell(2 * hidden, hidden)
+
+    def node_embeddings(self, x, edge_index, batch):
+        e = torch.relu(self.encode(x))
+        h = e
+        for _ in range(self.rounds):
+            h = self.gru(torch.cat([self.conv(h, edge_index), e], dim=-1), h)
+        return torch.cat([x, h], dim=-1)
+
+
+class EdgeRecDSGIN(CandidateReadout):
+    """Weight-tied recurrent subgraph GNN: node-marked copies (as in DS-GIN,
+    beyond 1-WL) with ONE shared message function and GRU applied `rounds`
+    times, so both expressive power and depth are available and the depth
+    can grow at test time. Copies are a tensor dimension, so explainer masks
+    still align. A final ordinary GIN layer gives PGExplainer [N, d]."""
+
+    def __init__(self, in_dim, hidden=64, num_layers=6, dropout=0.1, readout="sum"):
+        super().__init__(in_dim + 2 * hidden, hidden, dropout, readout)
+        self.rounds = num_layers
+        self.encode = nn.Linear(in_dim + 1, hidden)
+        self.conv = _SharedMessage(hidden, node_dim=0)
+        self.gru = nn.GRUCell(2 * hidden, hidden)
+        self.final = GINConv(mlp([in_dim + hidden, hidden, hidden]), train_eps=True)
+
+    def node_embeddings(self, x, edge_index, batch):
+        n = x.size(0)
+        ptr = torch.zeros(int(batch.max()) + 2 if n else 1, dtype=torch.long, device=x.device)
+        ptr[1:] = torch.bincount(batch, minlength=ptr.numel() - 1).cumsum(0)
+        local = torch.arange(n, device=x.device) - ptr[batch]
+        sizes = (ptr[1:] - ptr[:-1])[batch]
+        c_max = int(sizes.max()) if n else 1
+        copies = torch.arange(c_max, device=x.device)
+        valid = copies[None, :] < sizes[:, None]               # [N, C]
+        mark = (local[:, None] == copies[None, :]).float()     # [N, C]
+        inp = torch.cat([x[:, None, :].expand(n, c_max, x.size(1)), mark[..., None]], dim=-1)
+        e = torch.relu(self.encode(inp)) * valid[..., None]
+        h = e
+        for _ in range(self.rounds):
+            m = self.conv(h, edge_index)
+            upd = torch.zeros_like(h)
+            upd[valid] = self.gru(torch.cat([m[valid], e[valid]], dim=-1), h[valid])
+            h = upd
+        pooled = (h * valid[..., None]).sum(1) / valid.sum(1, keepdim=True)
+        hcat = torch.cat([x, pooled], dim=-1)
+        return torch.cat([hcat, torch.relu(self.final(hcat, edge_index))], dim=-1)
+
+
 # --------------------------------------------------------------------- rung 0
 def shortcut_features(data) -> torch.Tensor:
     """Per-example: n, |E|, 2n-3-|E|, sorted endpoint degrees, endpoint
@@ -235,7 +313,9 @@ class FeatureMLP(nn.Module):
         return self.net(self.norm(feats))
 
 
-GRAPH_MODELS = {"gcn": EdgeGCN, "mpnn": EdgeMPNN, "gin": EdgeGIN, "dsgin": EdgeDSGIN}
+GRAPH_MODELS = {"gcn": EdgeGCN, "mpnn": EdgeMPNN, "gin": EdgeGIN, "dsgin": EdgeDSGIN,
+                "recmpnn": EdgeRecMPNN, "recdsgin": EdgeRecDSGIN}
+RECURRENT = ("recmpnn", "recdsgin")
 ALL_MODELS = ["features", *GRAPH_MODELS]
 
 
@@ -247,6 +327,11 @@ def build_model(name: str, in_dim: int, hidden: int, layers: int, dropout: float
 
 
 def model_from_config(cfg: dict, in_dim: int) -> nn.Module:
-    """Rebuild a model from a saved training config (old configs: readout='sum')."""
-    return build_model(cfg["model"], in_dim, cfg["hidden"], cfg["layers"], cfg["dropout"],
-                       cfg.get("readout", "sum"))
+    """Rebuild a model from a saved training config (old configs: readout='sum').
+    Recurrent models get their evaluation round count (changeable afterwards
+    via model.rounds)."""
+    model = build_model(cfg["model"], in_dim, cfg["hidden"], cfg["layers"], cfg["dropout"],
+                        cfg.get("readout", "sum"))
+    if cfg["model"] in RECURRENT and cfg.get("eval_rounds"):
+        model.rounds = cfg["eval_rounds"]
+    return model

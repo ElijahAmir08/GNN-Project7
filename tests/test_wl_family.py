@@ -29,3 +29,33 @@ def test_1wl_models_cannot_separate_the_pair(name):
         out_a = model(a.x, a.edge_index, None, a.candidate)
         out_b = model(b.x, b.edge_index, None, b.candidate)
         assert torch.allclose(out_a, out_b, atol=1e-5)
+
+
+def _embedding_gap(model, k):
+    """Largest difference between the two graphs' sorted node embeddings
+    (float64, so tiny but real differences are not lost to rounding)."""
+    a, b = (record_to_data(r) for r in pair_records(k))
+    with torch.no_grad():
+        emb = [model.node_embeddings(d.x.double(), d.edge_index, torch.zeros(d.x.size(0), dtype=torch.long))
+               for d in (a, b)]
+    return (emb[0].sort(0).values - emb[1].sort(0).values).abs().max().item()
+
+
+def test_recurrent_dsgin_separates_the_pair_and_more_rounds_help():
+    """Node marking + depth separates the pair in principle; the gap grows
+    with rounds. (It also shrinks fast with k: see notes, 'signal fades'.)"""
+    torch.manual_seed(0)
+    model = GRAPH_MODELS["recdsgin"](NUM_NODE_FEATURES, hidden=16).double().eval()
+    gaps = []
+    for rounds in (4, 16):
+        model.rounds = rounds
+        gaps.append(_embedding_gap(model, 8))
+    assert gaps[0] > 0 and gaps[1] > 10 * gaps[0]
+
+
+def test_recurrent_mpnn_stays_exactly_blind_at_any_depth():
+    torch.manual_seed(0)
+    model = GRAPH_MODELS["recmpnn"](NUM_NODE_FEATURES, hidden=16).double().eval()
+    for rounds in (4, 16, 32):
+        model.rounds = rounds
+        assert _embedding_gap(model, 8) == 0.0

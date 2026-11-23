@@ -164,3 +164,24 @@ Step 1 (scripts/wl_collision_search.py, src/wl_family.py):
   k ≥ 7: extra expressivity helps only up to a size set by its depth (4 rounds).
 - So: 1-WL limitations are rare on random graphs (expressivity is not why models fail there), but
   they exist exactly at cut vertices / hinges, and fixing them needs expressivity AND depth.
+
+## Validity audit (Nov 23)
+Passed:
+- Oracle exact at scale: 0 mismatches vs PyRigi (pebble game) on 160 graphs up to 100 joints
+  (ood_large, ood_chain, lattice, truss); identical rank across 5 random realizations on the 20
+  largest lattices.
+- No leakage: 0 of 2,074 test examples (ood_suite, chains, truss, hard_eval, wl_family k>=7)
+  match any training/validation example (graph + candidate, isomorphism-invariant hash).
+Corrections:
+- Depth experiment: rounds must be chosen on validation, not test. Validation picks 10 rounds
+  for both recurrent models. Valid numbers: recurrent MPNN@10 vs GIN — ood_chain 0.95 vs 0.89
+  (+0.07, 95% CI [+0.03, +0.11]), lattice 0.73 vs 0.63 (+0.10 [+0.07, +0.14]), ood_large 0.76 vs
+  0.74 (n.s.). The earlier "lattice 0.81 at 24 rounds" was test-selected and is withdrawn.
+- Recurrent DS-GIN preliminary (2 seeds) ood_large 0.84 -> final (3 seeds) 0.78–0.79.
+Paired bootstrap (examples, seed-averaged): mixed training gains are significant on chains,
+ood_chain, ood_large (+0.23 to +0.35) and marginal on lattice (+0.05); the pair readout trade-off
+is significant both ways (lattice +0.25; chains −0.09, ood_chain −0.21, ood_large −0.25).
+Known caveats (not errors): CIs resample examples, not seeds; lattice and truss are not
+feature-matched; the 1-sum test also changes graph size; masked-training validation includes
+masked graphs; hard families are in-distribution after mixed training; explainer budgets for
+independent examples differ between explain_prelim (k=4) and oracle_eval (|E|/2).
