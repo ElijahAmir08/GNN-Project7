@@ -53,7 +53,13 @@ def record_to_data(rec: dict) -> EdgeTaskData:
     circuit = {tuple(c) for c in (rec.get("circuit_edges") or [])}
     circuit_mask = torch.tensor([e in circuit for e in edges], dtype=torch.bool)
 
+    extra = {}
+    if "aux_pairs" in rec:  # Experiment 3 auxiliary pairwise targets
+        extra["aux_index"] = torch.tensor(rec["aux_pairs"], dtype=torch.long).reshape(-1, 2).t().contiguous()
+        extra["aux_y"] = torch.tensor(rec["aux_labels"], dtype=torch.float)
+
     return EdgeTaskData(
+        **extra,
         x=x,
         edge_index=edge_index,
         y=torch.tensor([rec["label"]], dtype=torch.long),

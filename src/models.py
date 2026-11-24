@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import torch
 from torch import nn
-from torch_geometric.nn import GCNConv, GINConv, MessagePassing, global_add_pool
+from torch_geometric.nn import GCNConv, GINConv, MessagePassing, global_add_pool, global_mean_pool
 from torch_geometric.utils import degree
 
 
@@ -39,13 +39,16 @@ def mlp(dims: list[int], dropout: float = 0.0) -> nn.Sequential:
     return nn.Sequential(*layers)
 
 
-READOUTS = ("sum", "pair")
+READOUTS = ("sum", "pair", "mean")
 
 
 class CandidateReadout(nn.Module):
     """Base class: subclasses implement node_embeddings -> [N, emb_dim].
 
     readout="sum"  [h_u + h_v, h_u * h_v, sum-pool(h)]  (original)
+    readout="mean" [h_u + h_v, h_u * h_v, mean-pool(h)]: the global term is
+                   size-normalized, so it does not grow with the number of nodes
+                   (Milestone 1B).
     readout="pair" [h_u + h_v, h_u * h_v] only: no whole-graph term, so
                    structure far from the candidate can only matter through
                    message passing. Motivated by the 1-sum law (attaching a
@@ -58,7 +61,19 @@ class CandidateReadout(nn.Module):
         if readout not in READOUTS:
             raise ValueError(readout)
         self.readout = readout
-        self.head = mlp([(3 if readout == "sum" else 2) * emb_dim, hidden, 2], dropout=dropout)
+        self.emb_dim = emb_dim
+        self.head = mlp([(2 if readout == "pair" else 3) * emb_dim, hidden, 2], dropout=dropout)
+
+    def enable_aux(self, hidden: int):
+        """Experiment 3: symmetric pairwise head on node embeddings,
+        MLP([h_i + h_j, h_i * h_j]) -> 1 logit. Added only when requested, so
+        checkpoints without it load unchanged."""
+        self.aux_head = mlp([2 * self.emb_dim, hidden, 1])
+
+    def aux_logits(self, index):
+        h = self._last_h
+        hi, hj = h[index[0]], h[index[1]]
+        return self.aux_head(torch.cat([hi + hj, hi * hj], dim=-1)).squeeze(-1)
 
     def node_embeddings(self, x, edge_index, batch):
         raise NotImplementedError
@@ -67,10 +82,13 @@ class CandidateReadout(nn.Module):
         if batch is None:
             batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
         h = self.node_embeddings(x, edge_index, batch)
+        self._last_h = h
         hu, hv = h[candidate[:, 0]], h[candidate[:, 1]]
         parts = [hu + hv, hu * hv]
         if self.readout == "sum":
             parts.append(global_add_pool(h, batch))
+        elif self.readout == "mean":
+            parts.append(global_mean_pool(h, batch))
         return self.head(torch.cat(parts, dim=-1))
 
 
@@ -334,4 +352,6 @@ def model_from_config(cfg: dict, in_dim: int) -> nn.Module:
                         cfg.get("readout", "sum"))
     if cfg["model"] in RECURRENT and cfg.get("eval_rounds"):
         model.rounds = cfg["eval_rounds"]
+    if cfg.get("aux_weight", 0) > 0:
+        model.enable_aux(cfg["hidden"])
     return model

@@ -38,7 +38,10 @@ def set_seed(seed: int) -> None:
 
 
 def build_model(args):
-    return _build(args.model, NUM_NODE_FEATURES, args.hidden, args.layers, args.dropout, args.readout)
+    model = _build(args.model, NUM_NODE_FEATURES, args.hidden, args.layers, args.dropout, args.readout)
+    if args.aux_weight > 0:
+        model.enable_aux(args.hidden)
+    return model
 
 
 def logits_for(model, batch, kind):
@@ -88,6 +91,9 @@ def run_seed(args, splits, seed: int, out_dir: Path) -> dict:
                 model.rounds = round_rng.randint(args.rounds_min, args.rounds_max)
             opt.zero_grad()
             loss = F.cross_entropy(logits_for(model, batch, args.model), batch.y)
+            if args.aux_weight > 0 and batch.aux_index.numel():
+                loss = loss + args.aux_weight * F.binary_cross_entropy_with_logits(
+                    model.aux_logits(batch.aux_index), batch.aux_y)
             loss.backward()
             opt.step()
         if recurrent:
@@ -132,12 +138,15 @@ def main() -> None:
     p.add_argument("--hidden", type=int, default=64)
     p.add_argument("--layers", type=int, default=4)
     p.add_argument("--dropout", type=float, default=0.1)
-    p.add_argument("--readout", choices=["sum", "pair"], default="sum",
-                   help="sum: candidate pair + whole-graph sum pool; pair: candidate pair only")
+    p.add_argument("--readout", choices=["sum", "pair", "mean"], default="sum",
+                   help="sum: candidate pair + whole-graph sum pool; mean: + mean pool (size-normalized); "
+                        "pair: candidate pair only")
     p.add_argument("--rounds-min", type=int, default=4, help="recurrent models: fewest rounds per training batch")
     p.add_argument("--rounds-max", type=int, default=10, help="recurrent models: most rounds per training batch")
     p.add_argument("--eval-rounds", type=int, default=None,
                    help="recurrent models: rounds for validation/test and saved default (default: --rounds-max)")
+    p.add_argument("--aux-weight", type=float, default=0.0,
+                   help="Experiment 3: weight of the auxiliary pairwise loss (records need aux_pairs/aux_labels)")
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight-decay", type=float, default=0.0)
     p.add_argument("--batch-size", type=int, default=64)
